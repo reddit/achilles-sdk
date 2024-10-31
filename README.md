@@ -1,7 +1,4 @@
 # Achilles SDK
-[![Reticle Badge](https://reticle.snooguts.net/api/reticle_badge?repo_name=reddit/achilles-sdk)](https://reticle.snooguts.net/repos/reddit/achilles-sdk)
-
-> Achilles home: [go/achilles](https://go.snooguts.net/achilles)
 
 The Achilles SDK offers efficient
 [controller](https://kubernetes.io/docs/concepts/architecture/controller/) and
