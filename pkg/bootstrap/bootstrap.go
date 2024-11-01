@@ -43,6 +43,8 @@ type Options struct {
 	MetricsAddr string
 	// HealthAddr is the bind address for the healthcheck endpoints
 	HealthAddr string
+	// PprofAddr is the bind address for the pprof endpoints
+	PprofAddr string
 
 	// enables verbose mode
 	VerboseMode bool
@@ -71,6 +73,7 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 
 	flags.StringVar(&o.MetricsAddr, "metrics-addr", ":8080", "Bind address for metrics endpoint")
 	flags.StringVar(&o.HealthAddr, "health-addr", ":8081", "Bind address for health endpoint")
+	flags.StringVar(&o.PprofAddr, "pprof-addr", ":8082", "Bind address for pprof endpoints")
 
 	// logging parameters
 	flags.BoolVar(&o.VerboseMode, "verbose", true, "Enable verbose logging")
@@ -127,6 +130,7 @@ func buildManager(cfg *rest.Config, log *zap.SugaredLogger, schemes runtime.Sche
 		manager.Options{
 			HealthProbeBindAddress: opts.HealthAddr,
 			Metrics:                server.Options{BindAddress: opts.MetricsAddr},
+			PprofBindAddress:       opts.PprofAddr,
 			Logger:                 zapr.NewLogger(log.Desugar()),
 			Cache: cache.Options{
 				SyncPeriod: &opts.SyncPeriod,
