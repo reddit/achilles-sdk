@@ -79,7 +79,3 @@ After incorporating your changes into the achilles-sdk repository, you can publi
 4. Create a PR in the achilles repo with the newly upgraded achilles-sdk version
 
 <b>Note:</b> There are several other repos that also consume achilles-sdk but the current pattern is to allow consumers to update at their own leisure. The main repo that should for sure be updated to adopt the latest features is `reddit/achilles`.
-
-## Questions
-
-If you have any questions, please reach out to the `#achilles` Slack channel.
