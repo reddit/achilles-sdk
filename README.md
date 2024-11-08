@@ -45,23 +45,21 @@ documentation.
 
 ## Documentation
 
-* [Creating a controller](https://pages.github.snooguts.net/reddit/achilles-docs/dev/sdk/tutorial/)
-    * Comprehensive guide on the implementation of a controller with
-      achilles-sdk.
-* [Reconciler (FSM) Framework](docs/README.md)
+* [Reconciler (FSM) Framework](docs/sdk-fsm-reconciler.md#fsm-reconciler)
     * Overview of how achilles-sdk works by offering a finite-state machine
       orchestrated with a Kubernetes reconciler.
 
 ## How to Contribute
-1. Clone the repo locally.
-2. Create a new branch
-  - Make sure the branch is pushed to this repo, rather than from a fork. This allows us to easily test the branch code in our Tilt environment.
-3. Make changes and test.
-4. Submit a Pull Request with an appropriate description.
+1. Fork the repo.
+2. Make changes and test.
+3. Submit a Pull Request with an appropriate description.
+4. Tests will automatically run for you.
 5. Merge PR once it is approved.
 
 ## Releasing
-After incorporating your changes into the achilles-sdk repository, you can publish a new release to make the updated functionality available for repos that consume achilles-sdk such as [achilles](https://github.snooguts.net/reddit/achilles).
+Regular releases will be done by maintainers.
+
+After incorporating your changes into the achilles-sdk repository, you can publish a new release to make the updated functionality available for repos that consume achilles-sdk.
 
 #### Publish a new release:
 1. Navigate to the [GHE releases page for achilles-sdk](https://github.com/reddit/achilles-sdk/releases) and click the “Draft a new release” button in the top right
@@ -71,11 +69,9 @@ After incorporating your changes into the achilles-sdk repository, you can publi
    - To create a tag with the new version, click the “Choose a tag” button. Enter the new version number and click “Create new tag: `$your-tagname-here` on publish.”
 3. Click the “Generate release notes” button and verify that the changes align with expectations. If everything looks good, publish the release
 
-#### Make updated functionality available for repos like achilles:
-1. Create a branch in the achilles repository
+#### Make updated functionality available for repos consuming the achilles-sdk:
+1. Create a branch in the consuming repository
 2. Run the following command to upgrade the achilles-sdk version (replace v0.7.1 with the new version number):  
    `go get github.com/reddit/achilles-sdk@v0.7.1`
-3. Run a `git diff` and validate that the changes made to `go.mod` and `go.sum` are as expected. The diff should look something like the changes in this [PR](https://github.snooguts.net/reddit/achilles/pull/1135/files).
-4. Create a PR in the achilles repo with the newly upgraded achilles-sdk version
-
-<b>Note:</b> There are several other repos that also consume achilles-sdk but the current pattern is to allow consumers to update at their own leisure. The main repo that should for sure be updated to adopt the latest features is `reddit/achilles`.
+3. Run a `git diff` and validate that the changes made to `go.mod` and `go.sum` are as expected.
+4. Create a PR in the consuming repo with the newly upgraded achilles-sdk version
