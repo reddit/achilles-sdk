@@ -1,13 +1,17 @@
 # Achilles SDK
 
 The Achilles SDK offers efficient
-[controller](https://kubernetes.io/docs/concepts/architecture/controller/) and
-[operator](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
+[operator/controller](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
 creation by allowing engineers to focus on defining their automation business logic, modeled as transitions between resources states (i.e. an FSM). This
 significantly lessens the knowledge of controller and Kubernetes plumbing
 typically required to build controllers. It also forces standardization to
 ensure consistency amongst controllers at Reddit, providing common functionality
 such as metrics, logging, reusable API structs, etc..
+
+See the [achilles-token-controller](https://github.com/reddit/achilles-token-controller) repo for 
+a complete, runnable example of an Achilles SDK backed controller.
+
+## High Level Walkthrough
 
 As an example, assume you wanted to create a declarative API that allows
 developers to request object storage for their application. The API you wish to
