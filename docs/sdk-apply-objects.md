@@ -179,7 +179,7 @@ To use the resource lock, do the following:
 ```golang
 import "github.snooguts.net/reddit/achilles-sdk/pkg/io"
 
-out.Apply(obj, io.WithResourceLock())
+out.Apply(obj, io.WithOptimisticLock())
 ```
 
 **Deleting key-value pairs from map types**
@@ -196,7 +196,7 @@ import "github.snooguts.net/reddit/achilles-sdk/pkg/io"
 out.Apply(obj, io.AsUpdate())
 ```
 
-If this is a 3rd party CRD, you will likely need to pair the usage of `AsUpdate()` with `WithResourceLock()` to avoid
+If this is a 3rd party CRD, you will likely need to pair the usage of `AsUpdate()` with `WithOptimisticLock()` to avoid
 overwriting fields your controller does not manage.
 
 **Custom Management of Owner References**
