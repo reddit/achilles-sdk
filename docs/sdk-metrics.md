@@ -62,9 +62,9 @@ The "type" label indicates the type of triggering object:
 1. **"self"** triggers happen by nature of controller-runtime's reconciler model, where any event on the reconciled object 
 triggers a reconciliation.
 2. **"relative"** triggers occur through events on related objects. Related object triggers are wired up
-using the `.Watches()` [builder method](https://github.snooguts.net/reddit/achilles-sdk/blob/bd2f3522d9e38b513f3a0f206f9bb9b0532c8b50/pkg/fsm/controller.go#L136).
+using the `.Watches()` [builder method](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L134).
 3. **"child"** triggers occur through events on managed child objects (objects whose `meta.ownerRef` refers to the reconciled object). Child triggers
-are wired up using the `.Manages()` [builder method](https://github.snooguts.net/reddit/achilles-sdk/blob/bd2f3522d9e38b513f3a0f206f9bb9b0532c8b50/pkg/fsm/controller.go#L96)
+are wired up using the `.Manages()` [builder method](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L93)
 
 ```c
 achilles_trigger{

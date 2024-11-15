@@ -54,7 +54,7 @@ to controller restarts and any runtime errors.
 
 Every state in the FSM maps to a [status condition](https://maelvls.dev/kubernetes-conditions/) on the parent object,
 which is defined by the
-developer [for each state](https://github.snooguts.net/reddit/achilles/blob/c0ddc4dadb6a7613552598da773bd77b80b15c0c/lib/fsm/types/transitions.go#L52)
+developer [for each state](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/types/core.go#L31)
 . If the state completes successfully, the status condition's `Status` field will be set to true. Otherwise, in the case
 of a
 requeue result or error, the status field will be set to false.
@@ -70,7 +70,7 @@ Each state defines the next state to transition to the current state completes s
 based on logical conditions, allowing the expression of branching paths.
 
 Each state
-defines [a result type](https://github.snooguts.net/reddit/achilles/blob/c0ddc4dadb6a7613552598da773bd77b80b15c0c/lib/fsm/types/transitions.go#L118-L165)
+defines [a result type](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/types/results.go#L21)
 .
 Broadly speaking, there are three types of results:
 
@@ -92,7 +92,7 @@ An error result is used when an external condition is not expected to be false.
 
 The majority of controllers involve creating and updating Kubernetes objects, whether they are CRDs or native resources.
 The FSM framework provides
-an [output object set abstraction](https://github.snooguts.net/reddit/achilles/blob/c0ddc4dadb6a7613552598da773bd77b80b15c0c/lib/fsm/types/transitions.go#L41)
+an [output object set abstraction](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/types/output.go#L17)
 for ensuring outputs. It provides the following functionality:
 
 - output objects are tracked via the parent object's status
@@ -116,14 +116,14 @@ finalizer FSM terminates successfully.
 The FSM exposes the same trigger conditions as controller-runtime.
 
 When building a new controller,
-use `.Manages` ([source](https://github.snooguts.net/reddit/achilles/blob/e8f58f6d9a66ab799da21ae9eb1cdc373e56e2d2/lib/fsm/controller.go#L76))
+use `.Manages` ([source](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L93))
 to specify the type of object that is being managed by the controller. Each controller can only manage a single object
 type.
 
 The FSM automatically wires up triggers for all [managed resources](##Writing and Updating Managed Resources).
 
 Additional trigger conditions can be wired up for arbitrary events via
-the [`.Watches` method](https://github.snooguts.net/reddit/achilles/blob/e8f58f6d9a66ab799da21ae9eb1cdc373e56e2d2/lib/fsm/controller.go#L109)
+the [`.Watches` method](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L134)
 .
 
 ## Example FSM Controllers

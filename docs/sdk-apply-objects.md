@@ -4,7 +4,7 @@ This document describes conventions and patterns around performing updates to Ku
 
 ## OutputSet
 
-The `achilles-sdk`'s FSM reconciler supplies an [`OutputSet` abstraction](https://github.snooguts.net/reddit/achilles-sdk/blob/340f21a1aa4595651c8627fe754a44082bfab34b/pkg/fsm/types/output.go#L17)
+The `achilles-sdk`'s FSM reconciler supplies an [`OutputSet` abstraction](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/types/output.go#L17)
 that should satisfy _most_ use resource update use cases.
 
 The following illustrates the typical pattern:
@@ -206,7 +206,7 @@ This enables Kubernetes-native garbage collection, whereby all managed resources
 gets deleted. This default behavior makes sense in _most_ controller use cases.
 
 If your controller is intentionally managing owner references, you must disable this feature by using the `io.WithoutOwnerRefs()` 
-([link](https://github.snooguts.net/reddit/achilles-sdk/blob/dea76bcf6143aebce5ba0763f99c9f282b5b3415/pkg/io/options.go#L44))
+([link](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/io/options.go#L45))
 apply option.
 
 ### Mutation Based Updates
@@ -300,8 +300,8 @@ by using the resource lock.
 
 ## References
 
-1. The full list of apply options lives under [`/pkg/io/options.go`](https://github.snooguts.net/reddit/achilles-sdk/blob/0a9d9df29d5201b0f3d689108547c3a97d819d82/pkg/io/options.go)
-2. The client abstraction lives under [`/pkg/io/applicator.go`](https://github.snooguts.net/reddit/achilles-sdk/blob/0a9d9df29d5201b0f3d689108547c3a97d819d82/pkg/io/applicator.go)
+1. The full list of apply options lives under [`/pkg/io/options.go`](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/io/options.go)
+2. The client abstraction lives under [`/pkg/io/applicator.go`](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/io/applicator.go)
 
 [^1]: Read more about [Go serialization here](https://pkg.go.dev/encoding/json#Marshal)
 [^2]: We could theoretically implement or use a custom Go JSON marshaller that can output `key: null` to signal deletion of fields.
