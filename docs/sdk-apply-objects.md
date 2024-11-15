@@ -112,7 +112,7 @@ all `spec` and `status` fields are types that allow omission when serializing fr
 This means that actors can send updates while _omitting_ fields that they do not own, thus preventing collisions
 with other owners.
 
-Following these two assumptions, we can optimistically apply all object updates without utilizing Kubernetes' [resource version](https://github.snooguts.net/reddit/reddit-helm-charts#versioning)
+Following these two assumptions, we can optimistically apply all object updates without utilizing Kubernetes' resource version
 because there is no risk that any actor's update will conflict with or overwrite that of a different actor's.
 
 We also update all objects using [JSON merge patch semantics](https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/#use-a-json-merge-patch-to-update-a-deployment),
