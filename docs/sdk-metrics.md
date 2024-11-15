@@ -9,20 +9,10 @@ The Achilles SDK
 integrates [controller-runtime metrics](https://github.com/kubernetes-sigs/controller-runtime/blob/1ed345090869edc4bd94fe220386cb7fa5df745f/pkg/internal/controller/metrics/metrics.go).
 Controller-runtime metrics provide foundational metrics for understanding the performance and health of your controller.
 
-These metrics can be viewed in
-the ["Controller Runtime" Grafana dashboard](https://grafana.kubernetes.ue1.snooguts.net/d/Md5CPB44k/controller-runtime?orgId=1&refresh=30s&var-cluster=orch-1&var-prometheus=monitoring%2Finfrared-system&var-controller=All&var-webhook=All&from=1721981744523&to=1722003344523).
-
 ## SDK Metrics
 
 The Achilles SDK provides additional metrics that leverage SDK conventions and structures to provide more detailed
 insights into the health and performance of your controller.
-
-These metrics are displayed in the following Grafana dashboards:
-
-1. [Achilles Reconciler Metrics](https://grafana.kubernetes.ue1.snooguts.net/d/p_-RmaUVk/achilles-reconciler-metrics?orgId=1&from=1721960667563&to=1722003867564)
-   1. Provides a high level overview of your controller and its custom resources
-2. [Achilles Reconciler Detailed Metrics](https://grafana.kubernetes.ue1.snooguts.net/d/0gaENrwVk/achilles-reconciler-detailed-metrics?orgId=1&from=1721982323248&to=1722003923249)
-   1. Provides a detailed overview of particular reconcile loops of your controller.
 
 ### **`achilles_resource_readiness`**
 
@@ -72,9 +62,9 @@ The "type" label indicates the type of triggering object:
 1. **"self"** triggers happen by nature of controller-runtime's reconciler model, where any event on the reconciled object 
 triggers a reconciliation.
 2. **"relative"** triggers occur through events on related objects. Related object triggers are wired up
-using the `.Watches()` [builder method](https://github.snooguts.net/reddit/achilles-sdk/blob/bd2f3522d9e38b513f3a0f206f9bb9b0532c8b50/pkg/fsm/controller.go#L136).
+using the `.Watches()` [builder method](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L134).
 3. **"child"** triggers occur through events on managed child objects (objects whose `meta.ownerRef` refers to the reconciled object). Child triggers
-are wired up using the `.Manages()` [builder method](https://github.snooguts.net/reddit/achilles-sdk/blob/bd2f3522d9e38b513f3a0f206f9bb9b0532c8b50/pkg/fsm/controller.go#L96)
+are wired up using the `.Manages()` [builder method](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L93)
 
 ```c
 achilles_trigger{
@@ -118,5 +108,3 @@ achilles_state_duration_seconds_bucket{
   le="0.99",                            // the percentile of the histogram distribution
 } 183                                   // the duration in milliseconds
 ```
-
-The average durations are graphed over time in the [Achilles Detailed Reconciler Metrics dashboard](https://grafana.kubernetes.ue1.snooguts.net/d/0gaENrwVk/achilles-reconciler-detailed-metrics?orgId=1&from=1721983467755&to=1722005067755).

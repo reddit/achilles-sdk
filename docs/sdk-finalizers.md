@@ -35,5 +35,5 @@ var finalizerState = &state{
 ### Finalizer for claim/claimed reconciler
 
 For the claim/claimed reconciler, the sdk automatically adds a finalizer to the `claim` object.
-This is to ensure the sdk is able to delete the `claimed` object when the `claim` object is deleted ([ref](https://github.snooguts.net/reddit/achilles-sdk/blob/main/pkg/fsm/internal/reconciler_claim.go)).
+This is to ensure the sdk is able to delete the `claimed` object when the `claim` object is deleted ([ref](https://github.com/reddit/achilles-sdk/blob/main/pkg/fsm/internal/reconciler_claim.go)).
 The behaviour of the finalizer on the `claimed` object is controlled by the `finalizerState` provided to the controller as explained above
