@@ -262,7 +262,7 @@ must poll for the expected state, with a user-configured timeout and polling int
 `envtest` ITs can also exercise controller failures modes by emulating conditions under which your controller will error
 out.
 
-To see a full example of a `envtest` IT, refer to the [Achilles Federation controller test](https://github.snooguts.net/reddit/achilles/blob/f5f453b25216fd25f68c22b453345eb6777efbf0/orchestration-controller-manager/internal/controllers/federation/federation_reconciler_test.go).
+To see a full example of a `envtest` IT, refer to the [achilles-token-controller example test](https://github.com/reddit/achilles-token-controller/blob/b807e6b4f8000830aa2596132d73d466441a5d17/internal/controllers/accesstoken/reconciler_suite_test.go#L40).
 
 ### Running Your Test
 

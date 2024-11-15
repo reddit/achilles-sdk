@@ -107,7 +107,7 @@ to ensure the execution of logic that triggers when an object is deleted. Object
 terminating state, but not get deleted from Kubernetes state, until the finalizer is removed.
 
 The FSM provides a way to add a separate FSM triggered upon deletion of
-objects, [see this example](https://github.snooguts.net/reddit/achilles/blob/36c3aa3bde5a2590f5d914918a8cefdf1ef953a7/lib/fsm/test/test_fsm_reconciler.go#L39)
+objects, [see this example](https://github.com/reddit/achilles-token-controller/blob/b807e6b4f8000830aa2596132d73d466441a5d17/internal/controllers/accesstoken/reconciler.go#L162-L166)
 . The FSM automatically manages the attachment and removal of the finalizer. The finalizer will only be removed if the
 finalizer FSM terminates successfully.
 
@@ -128,5 +128,5 @@ the [`.Watches` method](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a
 
 ## Example FSM Controllers
 
-See [this simple example](https://github.snooguts.net/reddit/achilles/blob/1499fc7d792c9d717572bea58e85ccb597245bb3/lib/fsm/test/test_fsm_reconciler.go)
+See [this simple example](https://github.com/reddit/achilles-token-controller)
 for reference on how to implement an FSM controller.
