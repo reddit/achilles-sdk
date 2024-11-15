@@ -9,20 +9,10 @@ The Achilles SDK
 integrates [controller-runtime metrics](https://github.com/kubernetes-sigs/controller-runtime/blob/1ed345090869edc4bd94fe220386cb7fa5df745f/pkg/internal/controller/metrics/metrics.go).
 Controller-runtime metrics provide foundational metrics for understanding the performance and health of your controller.
 
-These metrics can be viewed in
-the ["Controller Runtime" Grafana dashboard](https://grafana.kubernetes.ue1.snooguts.net/d/Md5CPB44k/controller-runtime?orgId=1&refresh=30s&var-cluster=orch-1&var-prometheus=monitoring%2Finfrared-system&var-controller=All&var-webhook=All&from=1721981744523&to=1722003344523).
-
 ## SDK Metrics
 
 The Achilles SDK provides additional metrics that leverage SDK conventions and structures to provide more detailed
 insights into the health and performance of your controller.
-
-These metrics are displayed in the following Grafana dashboards:
-
-1. [Achilles Reconciler Metrics](https://grafana.kubernetes.ue1.snooguts.net/d/p_-RmaUVk/achilles-reconciler-metrics?orgId=1&from=1721960667563&to=1722003867564)
-   1. Provides a high level overview of your controller and its custom resources
-2. [Achilles Reconciler Detailed Metrics](https://grafana.kubernetes.ue1.snooguts.net/d/0gaENrwVk/achilles-reconciler-detailed-metrics?orgId=1&from=1721982323248&to=1722003923249)
-   1. Provides a detailed overview of particular reconcile loops of your controller.
 
 ### **`achilles_resource_readiness`**
 
@@ -118,5 +108,3 @@ achilles_state_duration_seconds_bucket{
   le="0.99",                            // the percentile of the histogram distribution
 } 183                                   // the duration in milliseconds
 ```
-
-The average durations are graphed over time in the [Achilles Detailed Reconciler Metrics dashboard](https://grafana.kubernetes.ue1.snooguts.net/d/0gaENrwVk/achilles-reconciler-detailed-metrics?orgId=1&from=1721983467755&to=1722005067755).
