@@ -87,10 +87,10 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.snooguts.net/reddit/achilles-sdk/pkg/fsm/metrics"
-	"github.snooguts.net/reddit/achilles-sdk/pkg/logging"
-	libratelimiter "github.snooguts.net/reddit/achilles-sdk/pkg/ratelimiter"
-	"github.snooguts.net/reddit/achilles-sdk/pkg/test"
+	"github.com/reddit/achilles-sdk/pkg/fsm/metrics"
+	"github.com/reddit/achilles-sdk/pkg/logging"
+	libratelimiter "github.com/reddit/achilles-sdk/pkg/ratelimiter"
+	"github.com/reddit/achilles-sdk/pkg/test"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -98,10 +98,10 @@ import (
 	ctrlzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.snooguts.net/reddit/mycontroller/internal/controllers/mycontroller"
-	"github.snooguts.net/reddit/mycontroller/internal/controlplane"
-	libtest "github.snooguts.net/reddit/mycontroller/internal/test"
-	ctrlscheme "github.snooguts.net/reddit/mycontroller/pkg/scheme"
+	"github.com/reddit/mycontroller/internal/controllers/mycontroller"
+	"github.com/reddit/mycontroller/internal/controlplane"
+	libtest "github.com/reddit/mycontroller/internal/test"
+	ctrlscheme "github.com/reddit/mycontroller/pkg/scheme"
 )
 
 var (

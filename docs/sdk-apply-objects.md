@@ -177,7 +177,7 @@ This guarantees that your controller will not overwrite data managed by other co
 To use the resource lock, do the following:
 
 ```golang
-import "github.snooguts.net/reddit/achilles-sdk/pkg/io"
+import "github.com/reddit/achilles-sdk/pkg/io"
 
 out.Apply(obj, io.WithOptimisticLock())
 ```
@@ -191,7 +191,7 @@ To perform a full object update, supply to `AsUpdate()` apply option like so:
 
 
 ```golang
-import "github.snooguts.net/reddit/achilles-sdk/pkg/io"
+import "github.com/reddit/achilles-sdk/pkg/io"
 
 out.Apply(obj, io.AsUpdate())
 ```
