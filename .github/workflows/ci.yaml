@@ -13,8 +13,6 @@ jobs:
       matrix:
         go-version:
           - "1.22"
-    env:
-      GOPRIVATE: github.com/reddit/achilles-sdk-api
 
     container:
       image: golang:${{ matrix.go-version }}
@@ -27,16 +25,6 @@ jobs:
           # Workaround a bug in github actions:
           # https://github.com/actions/runner-images/issues/6775.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Install SSH key
-        uses: shimataro/ssh-key-action@v2
-        with:
-          known_hosts: ${{ secrets.KNOWN_HOSTS }}
-          key: ${{ secrets.GO_MODULE_PRIVATE_KEY }}
-
-      - name: Setup access for private Go modules
-        run: |
-          git config --global url."ssh://git@github.com/".insteadOf https://github.com/
 
       - name: Generate
         run: |
