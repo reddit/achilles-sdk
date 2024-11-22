@@ -6,10 +6,8 @@ This guide walks you through the claim/claimed reconciler pattern available in t
 
 The `achilles-sdk` in addition to the base [FSM reconciler]({{< ref "dev/sdk/sdk-fsm-reconciler" >}}) also provides a claim/claimed reconciler pattern.
 This pattern uses the same FSM semantics from a developer perspective. This pattern is built around two types of resources:
-1. **Claim**: A claim resource is created by an end user or client claiming access to a resource. An example of this type of resource is [`RedisClusterClaim`](https://github.snooguts.net/reddit/achilles-redis-controllers/blob/main/api/storage/v1alpha1/redisclusterclaim_type.go)
-  which claims access to a `RedisCluster` instance.
-2. **Claimed**: A claimed resource captures the actual instance of given object. An example of this type of resource is [`RedisCluster`](https://github.snooguts.net/reddit/achilles-redis-controllers/blob/main/api/storage/v1alpha1/rediscluster_type.go)
-  which captures the actual resources running in AWS.
+1. **Claim**: A claim resource is created by an end user or client claiming access to a resource.
+2. **Claimed**: A claimed resource captures the actual instance of given object.
 
 **The `claim` object is namespaced whereas the `claimed` object is cluster-scoped**.
 
@@ -29,7 +27,6 @@ It's desirable for the `claim` object to be namespace scoped for one of the foll
    1. Note (April 17th, 2024) that the `achilles-sdk` hasn't implemented this decoupling pattern yet because no concrete use cases have required it.
 
 The `achilles-sdk` creates two independent reconcilers for the `claim` and `claimed` objects.
-The `claim` reconciler is entirely managed by the sdk and does not require any work on the user's part ([ref](https://github.snooguts.net/reddit/achilles-sdk/blob/main/pkg/fsm/internal/reconciler_claim.go#L43)).
+The `claim` reconciler is entirely managed by the sdk and does not require any work on the user's part ([ref](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/internal/reconciler_claim.go#L45)).
 The `claim` reconciler is responsible for creating the `claimed` object if it does not exist and cascading a delete call when the `claim` object is deleted.
 The developer is responsible for implementing the `claimed` reconciler using the exposed [FSM semantics]({{< ref "dev/sdk/sdk-fsm-reconciler" >}}).
-As an example take a look at the [ASGRotator Controller](https://github.snooguts.net/reddit/achilles/blob/master/orchestration-controller-manager/internal/controllers/cloud-resources/asgrotator/controller.go).

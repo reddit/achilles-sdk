@@ -55,7 +55,7 @@ type RequestOptions struct {
 // An APIPatchingApplicator applies changes to an object by either creating or
 // patching it in a Kubernetes API server.
 // For a detailed discussion of the reasoning behind these semantics, see this doc,
-// https://pages.github.snooguts.net/reddit/achilles-docs/dev/sdk/sdk-apply-objects/.
+// https://github.com/reddit/achilles-sdk/blob/main/docs/sdk-apply-objects.md.
 type APIApplicator struct {
 	client client.Client
 }
