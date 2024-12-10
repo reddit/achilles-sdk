@@ -159,17 +159,18 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 
 		if r.reconcilerOptions.CreateIfNotFound {
 			obj := r.reconcilerOptions.CreateFunc(req)
-			// NOTE: nil obj signals that the object should not be created. This is primarily used by callers to prevent
-			// stale requests in the event queue from triggering unneeded object creations.
-			if obj == nil {
+			// Create the object supplied by the caller if not nil.
+			if obj != nil {
+				// already exists error can occur if the CreateFunc sets the object name to something other than req.Name
+				if err := r.client.Create(ctx, obj); client.IgnoreAlreadyExists(err) != nil {
+					return nil, nil, types.ErrorResult(fmt.Errorf("creating object %s: %w", req.NamespacedName, err))
+				}
+				// NOTE: wait for next reconcile before updating status to reduce "object does not exist, cannot update its status" errors
 				return nil, nil, types.DoneResult()
 			}
-			// already exists error can occur if the CreateFunc sets the object name to something other than req.Name
-			if err := r.client.Create(ctx, obj); client.IgnoreAlreadyExists(err) != nil {
-				return nil, nil, types.ErrorResult(fmt.Errorf("creating object %s: %w", req.NamespacedName, err))
-			}
-			// NOTE: wait for next reconcile before updating status to reduce "object does not exist, cannot update its status" errors
-			return nil, nil, types.DoneResult()
+
+			// If obj is nil, the caller signals that the object should not be created. This is primarily used by callers to prevent
+			// stale requests in the event queue from triggering unneeded object creations.
 		}
 
 		// deregister metrics for deleted objects (to keep metrics cardinality count from monotonically increasing over an application's lifetime)

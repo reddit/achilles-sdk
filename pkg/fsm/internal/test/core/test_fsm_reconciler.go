@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -14,9 +15,12 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlhandler "sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	achapi "github.com/reddit/achilles-sdk-api/api"
 	"github.com/reddit/achilles-sdk/pkg/fsm"
+	"github.com/reddit/achilles-sdk/pkg/fsm/handler"
 	"github.com/reddit/achilles-sdk/pkg/fsm/metrics"
 	fsmtypes "github.com/reddit/achilles-sdk/pkg/fsm/types"
 	testv1alpha1 "github.com/reddit/achilles-sdk/pkg/internal/tests/api/test/v1alpha1"
@@ -43,6 +47,7 @@ func SetupController(
 	rl workqueue.RateLimiter,
 	c *io.ClientApplicator,
 	metrics *metrics.Metrics,
+	disableAutoCreate *atomic.Bool,
 ) error {
 	r := &reconciler{
 		log:    log,
@@ -67,8 +72,36 @@ func SetupController(
 						InitialStateConditionType,
 					},
 				},
+				// exercise automatic creation feature
+				CreateIfNotFound: true,
+				CreateFunc: func(req ctrl.Request) *testv1alpha1.TestClaim {
+					// only create the resource if it's named "test-create-func"
+					if req.Name != "test-create-func" {
+						return nil
+					}
+					// don't recreate if disabled (for exercising proper cleanup)
+					if disableAutoCreate.Load() {
+						return nil
+					}
+
+					return &testv1alpha1.TestClaim{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      req.Name,
+							Namespace: req.Namespace,
+						},
+					}
+				},
 			},
-		)
+		).
+		Watches(&corev1.ConfigMap{},
+			// trigger auto creation of `test-create-func` TestClaim iff a ConfigMap of name `test-create-func` is created
+			ctrlhandler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+				if o.GetName() == "test-create-func" {
+					return []reconcile.Request{{NamespacedName: client.ObjectKeyFromObject(o)}}
+				}
+				return nil
+			},
+			), handler.TriggerTypeRelative)
 
 	return builder.Build()(mgr, log, rl, metrics)
 }

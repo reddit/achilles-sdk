@@ -313,13 +313,13 @@ var _ = Describe("Controller", Ordered, func() {
 		Eventually(func(g Gomega) {
 			// get metric
 			metric, err := getMetric("achilles_object_suspended", suspendMetricLabelsMap)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
 			// validate value
 			value, err := getGaugeMetricValue(metric)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
-			Expect(value).To(Equal(float64(1)))
+			g.Expect(value).To(Equal(float64(1)))
 		}).Should(Succeed())
 
 		_, err = controllerutil.CreateOrPatch(ctx, c, claim, func() error {
@@ -337,13 +337,13 @@ var _ = Describe("Controller", Ordered, func() {
 		Eventually(func(g Gomega) {
 			// get metric
 			metric, err := getMetric("achilles_object_suspended", suspendMetricLabelsMap)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
 			// validate value
 			value, err := getGaugeMetricValue(metric)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
-			Expect(value).To(Equal(float64(0)))
+			g.Expect(value).To(Equal(float64(0)))
 		}).Should(Succeed())
 	})
 
@@ -352,45 +352,45 @@ var _ = Describe("Controller", Ordered, func() {
 		rgTrueCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, string(metav1.ConditionTrue))
 		Eventually(func(g Gomega) {
 			metric, err := getMetric("achilles_resource_readiness", rgTrueCondLabelMap)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getGaugeMetricValue(metric)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
-			Expect(value).To(Equal(float64(1)))
+			g.Expect(value).To(Equal(float64(1)))
 		}).Should(Succeed())
 
 		rgFalseCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, string(metav1.ConditionFalse))
 		Eventually(func(g Gomega) {
 			metric, err := getMetric("achilles_resource_readiness", rgFalseCondLabelMap)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getGaugeMetricValue(metric)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
-			Expect(value).To(Equal(float64(0)))
+			g.Expect(value).To(Equal(float64(0)))
 		}).Should(Succeed())
 
 		rgUnknownCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, string(metav1.ConditionUnknown))
 		Eventually(func(g Gomega) {
 			metric, err := getMetric("achilles_resource_readiness", rgUnknownCondLabelMap)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getGaugeMetricValue(metric)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
-			Expect(value).To(Equal(float64(0)))
+			g.Expect(value).To(Equal(float64(0)))
 		}).Should(Succeed())
 
 		rgDeletedCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, "Deleted")
 		Eventually(func(g Gomega) {
 			metric, err := getMetric("achilles_resource_readiness", rgDeletedCondLabelMap)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getGaugeMetricValue(metric)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
-			Expect(value).To(Equal(float64(0)))
+			g.Expect(value).To(Equal(float64(0)))
 		}).Should(Succeed())
 
 		rgUnsupportedCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, "Unsupported")
@@ -409,12 +409,12 @@ var _ = Describe("Controller", Ordered, func() {
 		Eventually(func(g Gomega) {
 			// if state is specified, duration histogram value should not be zero, as there is one metric per state in the test reconciler
 			metric, err := getMetric("achilles_state_duration_seconds", sdCmProvLabelMap)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getHistogramMetricSampleCount(metric)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
-			Expect(value).ToNot(Equal(uint64(0)))
+			g.Expect(value).ToNot(Equal(uint64(0)))
 		}).Should(Succeed())
 
 		sdInitialStateLabelMap := map[string]string{
@@ -425,12 +425,12 @@ var _ = Describe("Controller", Ordered, func() {
 		}
 		Eventually(func(g Gomega) {
 			metric, err := getMetric("achilles_state_duration_seconds", sdInitialStateLabelMap)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getHistogramMetricSampleCount(metric)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
-			Expect(value).ToNot(Equal(uint64(0)))
+			g.Expect(value).ToNot(Equal(uint64(0)))
 		}).Should(Succeed())
 	})
 
@@ -438,12 +438,12 @@ var _ = Describe("Controller", Ordered, func() {
 		initialStateMetricLabels := statusConditionLabels(client.ObjectKeyFromObject(testClaim), InitialStateConditionType, string(metav1.ConditionTrue))
 		Eventually(func(g Gomega) {
 			metric, err := getMetric("achilles_resource_readiness", initialStateMetricLabels)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getGaugeMetricValue(metric)
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 
-			Expect(value).To(Equal(float64(1)))
+			g.Expect(value).To(Equal(float64(1)))
 		}).Should(Succeed())
 	})
 
@@ -649,7 +649,7 @@ var _ = Describe("Controller", Ordered, func() {
 			Eventually(func(g Gomega) {
 				_, err := getMetric("achilles_resource_readiness", rgTrueCondLabelMap)
 				// expect error as the metric should have been deleted since TestClaim is the only object that has associated achilles_resource_readiness metric
-				Expect(err).To(MatchError("achilles_resource_readiness metric does not exist"))
+				g.Expect(err).To(MatchError("achilles_resource_readiness metric does not exist"))
 			}).Should(Succeed())
 		}
 
@@ -659,7 +659,87 @@ var _ = Describe("Controller", Ordered, func() {
 				"reqNamespace": testClaim.Namespace,
 				"controller":   "test-claim",
 			})
-			Expect(err).To(MatchError("achilles_trigger metric does not exist"))
+			g.Expect(err).To(MatchError("achilles_trigger metric does not exist"))
+		}).Should(Succeed())
+	})
+
+	It("should handle automatic creation of objects when enabled", func() {
+		autoCreatedClaimKey := client.ObjectKey{Name: "test-create-func", Namespace: "default"}
+
+		By("triggering auto creation")
+
+		Expect(c.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-create-func",
+				Namespace: "default",
+			},
+		})).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			// assert managed object creation
+			actual := &testv1alpha1.TestClaim{}
+			g.Expect(c.Get(ctx, autoCreatedClaimKey, actual)).To(Succeed())
+		}).Should(Succeed())
+
+		// assert that metrics exist for object
+		rgTrueCondLabelMap := statusConditionLabels(autoCreatedClaimKey, api.TypeReady, string(metav1.ConditionTrue))
+		Eventually(func(g Gomega) {
+			_, err := getMetric("achilles_resource_readiness", rgTrueCondLabelMap)
+			g.Expect(err).ToNot(HaveOccurred())
+		}).Should(Succeed())
+
+		// delete the auto created object
+		Expect(c.Delete(ctx, &testv1alpha1.TestClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-create-func",
+				Namespace: "default",
+			},
+		})).To(Succeed())
+
+		// assert that it's recreated
+		Eventually(func(g Gomega) {
+			// assert managed object creation
+			actual := &testv1alpha1.TestClaim{}
+			g.Expect(c.Get(ctx, autoCreatedClaimKey, actual)).To(Succeed())
+		}).Should(Succeed())
+
+		By("disabling auto creation")
+
+		disableAutoCreate.Store(true)
+
+		// delete the auto created object and assert that it's NOT recreated
+		Eventually(func(g Gomega) {
+			testClaim := &testv1alpha1.TestClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-create-func",
+					Namespace: "default",
+				},
+			}
+
+			g.Expect(c.Delete(ctx, testClaim)).To(Succeed())
+
+			// manually remove finalizer
+			_, err := controllerutil.CreateOrPatch(ctx, c, testClaim, func() error {
+				testClaim.SetFinalizers([]string{})
+				return nil
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			actual := &testv1alpha1.TestClaim{}
+			g.Expect(errors.IsNotFound(c.Get(ctx, autoCreatedClaimKey, actual))).To(BeTrue())
+		}).Should(Succeed())
+
+		Consistently(func(g Gomega) {
+			// assert managed object creation
+			actual := &testv1alpha1.TestClaim{}
+			g.Expect(errors.IsNotFound(c.Get(ctx, autoCreatedClaimKey, actual))).To(BeTrue())
+		}).WithTimeout(3 * time.Second).Should(Succeed())
+
+		By("handling cleanup of metrics")
+		// assert that metrics DO NOT exist for object
+		Eventually(func(g Gomega) {
+			_, err := getMetric("achilles_resource_readiness", rgTrueCondLabelMap)
+			g.Expect(err.Error()).To(ContainSubstring("metric does not exist"))
 		}).Should(Succeed())
 	})
 })
