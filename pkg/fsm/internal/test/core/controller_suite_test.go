@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +36,8 @@ var (
 	c       client.Client
 	log     *zap.SugaredLogger
 	reg     *prometheus.Registry
+
+	disableAutoCreate = new(atomic.Bool)
 )
 
 var _ = BeforeSuite(func() {
@@ -68,7 +71,7 @@ var _ = BeforeSuite(func() {
 					Client:     mgr.GetClient(),
 					Applicator: io.NewAPIPatchingApplicator(mgr.GetClient()),
 				}
-				return SetupController(log, mgr, rl, clientApplicator, metrics)
+				return SetupController(log, mgr, rl, clientApplicator, metrics, disableAutoCreate)
 			},
 		).
 		Start()
