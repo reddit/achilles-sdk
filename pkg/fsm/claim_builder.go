@@ -149,7 +149,7 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 	return func(
 		mgr ctrl.Manager,
 		log *zap.SugaredLogger,
-		rl workqueue.RateLimiter,
+		rl workqueue.TypedRateLimiter[reconcile.Request],
 		metrics *metrics.Metrics,
 	) error {
 		objGVK := meta.MustTypedObjectRefFromObject(b.obj, mgr.GetScheme())
@@ -253,20 +253,16 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 		}
 
 		// wire up custom watches to claimed
-		for _, watch := range b.watches {
+		for _, w := range b.watches {
 			claimedBuilder.Watches(
-				watch.object,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, watch.handler, watch.triggerType),
-				watch.opts...,
+				w.object,
+				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, w.handler, w.triggerType),
+				w.opts...,
 			)
 		}
 
-		for _, watch := range b.watchesRawSource {
-			claimedBuilder.WatchesRawSource(
-				watch.src,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, watch.handler, watch.triggerType),
-				watch.opts...,
-			)
+		for _, w := range b.watchesRawSource {
+			claimedBuilder.WatchesRawSource(w.src)
 		}
 
 		// custom controller builder options

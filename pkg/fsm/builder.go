@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	apitypes "github.com/reddit/achilles-sdk-api/pkg/types"
@@ -30,7 +31,7 @@ import (
 type SetupFunc func(
 	ctrl.Manager, // controller-runtime manager
 	*zap.SugaredLogger, // logger
-	workqueue.RateLimiter, // reconciler rate limiter
+	workqueue.TypedRateLimiter[reconcile.Request], // reconciler rate limiter
 	*metrics.Metrics, // metrics sink
 ) error
 
@@ -176,7 +177,7 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 	return func(
 		mgr ctrl.Manager,
 		log *zap.SugaredLogger,
-		rl workqueue.RateLimiter,
+		rl workqueue.TypedRateLimiter[reconcile.Request],
 		metrics *metrics.Metrics,
 	) error {
 		scheme := mgr.GetScheme()
@@ -223,20 +224,16 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 		}
 
 		// wire up custom watches
-		for _, watch := range b.watches {
+		for _, w := range b.watches {
 			builder.Watches(
-				watch.object,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, watch.handler, watch.triggerType),
-				watch.opts...,
+				w.object,
+				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, w.handler, w.triggerType),
+				w.opts...,
 			)
 		}
 
-		for _, watch := range b.watchesRawSource {
-			builder.WatchesRawSource(
-				watch.src,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, watch.handler, watch.triggerType),
-				watch.opts...,
-			)
+		for _, w := range b.watchesRawSource {
+			builder.WatchesRawSource(w.src)
 		}
 
 		// custom controller builder options
@@ -244,14 +241,14 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			opt(builder)
 		}
 
-		controller, err := builder.Build(r)
+		con, err := builder.Build(r)
 		if err != nil {
 			return fmt.Errorf("initializing controller: %w", err)
 		}
 
 		// controller functions
 		for _, fn := range b.controllerFns {
-			fn(controller)
+			fn(con)
 		}
 
 		return nil

@@ -9,7 +9,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/prometheus/client_golang/prometheus"
-	io_prometheus_client "github.com/prometheus/client_model/go"
+	ioprometheusclient "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -29,6 +29,7 @@ import (
 	fsmhandler "github.com/reddit/achilles-sdk/pkg/fsm/handler"
 	"github.com/reddit/achilles-sdk/pkg/fsm/metrics"
 	internalscheme "github.com/reddit/achilles-sdk/pkg/internal/scheme"
+	"github.com/reddit/achilles-sdk/pkg/ratelimiter"
 )
 
 const controllerName = "test"
@@ -42,7 +43,7 @@ func TestObserveEnqueueOwner(t *testing.T) {
 	cases := []struct {
 		name                      string
 		expectedLogs              []expectedLog
-		expectedMetricLabelValues [][]*io_prometheus_client.LabelPair
+		expectedMetricLabelValues [][]*ioprometheusclient.LabelPair
 		expectedMetricValues      []*float64
 		isController              bool
 		o                         client.Object
@@ -88,7 +89,7 @@ func TestObserveEnqueueOwner(t *testing.T) {
 					},
 				},
 			},
-			expectedMetricLabelValues: [][]*io_prometheus_client.LabelPair{
+			expectedMetricLabelValues: [][]*ioprometheusclient.LabelPair{
 				{
 					newLabelPair("group", ""),
 					newLabelPair("version", "v1"),
@@ -155,7 +156,7 @@ func TestObserveEnqueueOwner(t *testing.T) {
 					},
 				},
 			},
-			expectedMetricLabelValues: [][]*io_prometheus_client.LabelPair{
+			expectedMetricLabelValues: [][]*ioprometheusclient.LabelPair{
 				{
 					newLabelPair("group", ""),
 					newLabelPair("version", "v1"),
@@ -214,7 +215,7 @@ func TestObserveEnqueueOwner(t *testing.T) {
 		observedZapCore, observedLogs := observer.New(zap.DebugLevel)
 		log := zap.New(observedZapCore).Sugar()
 		reg := prometheus.NewRegistry()
-		metrics := metrics.MustMakeMetrics(scheme, reg)
+		m := metrics.MustMakeMetrics(scheme, reg)
 
 		var h *fsmhandler.ObservedEventHandler
 		if tc.isController {
@@ -222,7 +223,7 @@ func TestObserveEnqueueOwner(t *testing.T) {
 				log,
 				scheme,
 				controllerName,
-				metrics,
+				m,
 				handler.EnqueueRequestForOwner(scheme, testrestmapper.TestOnlyStaticRESTMapper(scheme), &corev1.ConfigMap{}, handler.OnlyControllerOwner()),
 				fsmhandler.TriggerTypeChild,
 			)
@@ -231,14 +232,14 @@ func TestObserveEnqueueOwner(t *testing.T) {
 				log,
 				scheme,
 				controllerName,
-				metrics,
+				m,
 				handler.EnqueueRequestForOwner(scheme, testrestmapper.TestOnlyStaticRESTMapper(scheme), &corev1.ConfigMap{}),
 				fsmhandler.TriggerTypeChild,
 			)
 		}
 
 		t.Run(tc.name, func(t *testing.T) {
-			queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+			queue := workqueue.NewTypedRateLimitingQueue(ratelimiter.NewZeroDelayManagedRateLimiter(ratelimiter.NewGlobal(1)))
 			h.Create(context.TODO(), event.CreateEvent{Object: tc.o}, queue)
 			assertExpectedLogMessages(t, tc.expectedLogs, observedLogs)
 			assertExpectedCounterMetrics(t, reg, tc.expectedMetricLabelValues, tc.expectedMetricValues, "achilles_trigger")
@@ -252,7 +253,7 @@ func TestObserveEnqueueMapped(t *testing.T) {
 		name                      string
 		expected                  []expectedLog
 		o                         client.Object
-		expectedMetricLabelValues [][]*io_prometheus_client.LabelPair
+		expectedMetricLabelValues [][]*ioprometheusclient.LabelPair
 		expectedMetricValues      []*float64
 		reqs                      []reconcile.Request
 	}{
@@ -286,7 +287,7 @@ func TestObserveEnqueueMapped(t *testing.T) {
 					},
 				},
 			},
-			expectedMetricLabelValues: [][]*io_prometheus_client.LabelPair{
+			expectedMetricLabelValues: [][]*ioprometheusclient.LabelPair{
 				{
 					newLabelPair("group", "apps"),
 					newLabelPair("version", "v1"),
@@ -344,19 +345,19 @@ func TestObserveEnqueueMapped(t *testing.T) {
 		observedZapCore, observedLogs := observer.New(zap.DebugLevel)
 		log := zap.New(observedZapCore).Sugar()
 		reg := prometheus.NewRegistry()
-		metrics := metrics.MustMakeMetrics(scheme, reg)
+		m := metrics.MustMakeMetrics(scheme, reg)
 
 		h := fsmhandler.NewObservedEventHandler(
 			log,
 			scheme,
 			controllerName,
-			metrics,
+			m,
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, object client.Object) []reconcile.Request { return tc.reqs }),
 			fsmhandler.TriggerTypeRelative,
 		)
 
 		t.Run(tc.name, func(t *testing.T) {
-			queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+			queue := workqueue.NewTypedRateLimitingQueue(ratelimiter.NewZeroDelayManagedRateLimiter(ratelimiter.NewGlobal(1)))
 			h.Create(context.TODO(), event.CreateEvent{Object: tc.o}, queue)
 			assertExpectedLogMessages(t, tc.expected, observedLogs)
 			assertExpectedCounterMetrics(t, reg, tc.expectedMetricLabelValues, tc.expectedMetricValues, "achilles_trigger")
@@ -369,7 +370,7 @@ func TestObserveEnqueueObject(t *testing.T) {
 	cases := []struct {
 		name                      string
 		expected                  []expectedLog
-		expectedMetricLabelValues [][]*io_prometheus_client.LabelPair
+		expectedMetricLabelValues [][]*ioprometheusclient.LabelPair
 		expectedMetricValues      []*float64
 		o                         client.Object
 	}{
@@ -385,7 +386,7 @@ func TestObserveEnqueueObject(t *testing.T) {
 					},
 				},
 			},
-			expectedMetricLabelValues: [][]*io_prometheus_client.LabelPair{
+			expectedMetricLabelValues: [][]*ioprometheusclient.LabelPair{
 				{
 					newLabelPair("group", ""),
 					newLabelPair("version", "v1"),
@@ -417,13 +418,13 @@ func TestObserveEnqueueObject(t *testing.T) {
 		observedZapCore, observedLogs := observer.New(zap.DebugLevel)
 		log := zap.New(observedZapCore).Sugar()
 		reg := prometheus.NewRegistry()
-		metrics := metrics.MustMakeMetrics(scheme, reg)
+		m := metrics.MustMakeMetrics(scheme, reg)
 
 		h := fsmhandler.NewForObservePredicate(
 			log,
 			scheme,
 			controllerName,
-			metrics,
+			m,
 		)
 
 		t.Run(tc.name, func(t *testing.T) {
@@ -472,7 +473,7 @@ func extractLogStringPairs(fields []zapcore.Field) map[string]string {
 func assertExpectedCounterMetrics(
 	t *testing.T,
 	reg *prometheus.Registry,
-	expectedMetricLabelValues [][]*io_prometheus_client.LabelPair,
+	expectedMetricLabelValues [][]*ioprometheusclient.LabelPair,
 	expectedMetricValues []*float64,
 	expectedMetricName string,
 ) {
@@ -481,7 +482,7 @@ func assertExpectedCounterMetrics(
 		t.Fatalf("gathering metrics: %s", err.Error())
 	}
 
-	var metrics []*io_prometheus_client.Metric
+	var metrics []*ioprometheusclient.Metric
 	for _, metricFamily := range metricFamilies {
 		if metricFamily != nil && *metricFamily.Name == expectedMetricName {
 			metrics = metricFamily.Metric
@@ -509,14 +510,14 @@ func assertExpectedCounterMetrics(
 			t.Errorf("unexpected metric value (-got +want):\n%s", diff)
 		}
 
-		if diff := cmp.Diff(expectedLabelValues, metric.Label, cmpopts.IgnoreUnexported(io_prometheus_client.LabelPair{}), cmpopts.SortSlices(func(a, b *io_prometheus_client.LabelPair) bool { return *a.Name < *b.Name })); diff != "" {
+		if diff := cmp.Diff(expectedLabelValues, metric.Label, cmpopts.IgnoreUnexported(ioprometheusclient.LabelPair{}), cmpopts.SortSlices(func(a, b *ioprometheusclient.LabelPair) bool { return *a.Name < *b.Name })); diff != "" {
 			t.Errorf("unexpected metric value (-got +want):\n%s", diff)
 		}
 	}
 }
 
-func newLabelPair(name, value string) *io_prometheus_client.LabelPair {
-	return &io_prometheus_client.LabelPair{
+func newLabelPair(name, value string) *ioprometheusclient.LabelPair {
+	return &ioprometheusclient.LabelPair{
 		Name:  ptr.To(name),
 		Value: ptr.To(value),
 	}
