@@ -2,8 +2,6 @@ module github.com/reddit/achilles-sdk
 
 go 1.23.0
 
-toolchain go1.23.4
-
 require (
 	github.com/fgrosse/zaptest v1.2.1
 	github.com/go-logr/zapr v1.3.0
