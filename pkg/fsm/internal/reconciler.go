@@ -28,8 +28,9 @@ import (
 )
 
 const (
-	deletedStateName = "deleted"
-	finalizerKey     = "infrared.reddit.com/fsm"
+	deletedStateName        = "deleted"
+	finalizerKey            = "infrared.reddit.com/fsm"
+	skipRecordReadinessName = "infrared.reddit.com/skip-record-readiness"
 )
 
 var errStateLoop = errors.New("re-entered state")
@@ -102,7 +103,9 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 		for _, conditionType := range r.reconcilerOptions.MetricsOptions.ConditionTypes {
 			r.metrics.RecordCondition(obj, conditionType)
 		}
-
+		if skipRecordReadiness(obj) {
+			return
+		}
 		r.metrics.RecordReadiness(obj)
 	}()
 
@@ -303,4 +306,13 @@ func DeletedStateFor[T any, Obj apitypes.FSMResource[T]](_ *fsmReconciler[T, Obj
 		Name:      deletedStateName,
 		Condition: api.Deleting(), // Ready = false, deleting
 	}
+}
+
+func skipRecordReadiness(obj metav1.Object) bool {
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+	_, ok := annotations[skipRecordReadinessName]
+	return ok
 }
