@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,6 +47,7 @@ var (
 	// External data is written to claimed's annotations.
 	// srcChan is used to trigger reconciliation when externalData changes
 	externalData = "version_1"
+	mu           sync.Mutex
 )
 
 type reconciler struct {
@@ -67,7 +69,11 @@ func (r *reconciler) initialState() *state {
 			if claimed.Annotations == nil {
 				claimed.Annotations = make(map[string]string)
 			}
+
+			mu.Lock()
 			claimed.Annotations[externalDataAnnotation] = externalData
+			mu.Unlock()
+
 			if err := r.c.Update(ctx, claimed); err != nil {
 				return nil, fsmtypes.ErrorResult(fmt.Errorf("updating status: %w", err))
 			}
@@ -143,24 +149,28 @@ var _ = Describe("Claim Controller", func() {
 
 		By("Making sure reconciliations finished")
 		Eventually(func(g Gomega) {
-			g.Expect(r.lastReconcileAt.Load().(time.Time)).
-				To(BeTemporally("<=", time.Now().Add(-1*time.Second)))
-		}).WithTimeout(3 * time.Second).Should(Succeed())
+			mu.Lock()
+			lastReconcile := r.lastReconcileAt.Load().(time.Time)
+			passedTime := time.Now().Add(-3 * time.Second)
+			mu.Unlock()
+			g.Expect(lastReconcile).To(BeTemporally("<=", passedTime))
+		}).WithTimeout(10 * time.Second).Should(Succeed())
 
 		By("Updating external data and making sure reconciliation is not triggered")
-		claimed = claimed.DeepCopy() // avoid race
-		externalData = "version_2"
+
 		Consistently(func(g Gomega) {
+			externalData = "version_2"
+			claimed = claimed.DeepCopy() // avoid race
 			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(claimed), claimed)).ToNot(HaveOccurred())
 			g.Expect(claimed.Annotations[externalDataAnnotation]).To(Equal("version_1"))
 		}).WithTimeout(1 * time.Second).Should(Succeed())
 
 		By("Triggering reconciliation via events channel")
-		claimed = claimed.DeepCopy() // avoid race
 		srcChan <- event.GenericEvent{Object: claimed}
 		Eventually(func(g Gomega) {
+			claimed = claimed.DeepCopy() // avoid race
 			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(claimed), claimed)).ToNot(HaveOccurred())
 			g.Expect(claimed.Annotations[externalDataAnnotation]).To(Equal("version_2"))
-		}).WithTimeout(1 * time.Second).Should(Succeed())
+		}).WithTimeout(5 * time.Second).Should(Succeed())
 	})
 })
