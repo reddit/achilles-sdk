@@ -25,10 +25,44 @@ type ReconcilerOptions[T any, Obj types.FSMResource[T]] struct {
 	MetricsOptions MetricsOptions
 }
 
+// AchillesMetrics represents various achilles metrics.
+type AchillesMetrics string
+
+// String returns AchillesMetrics as a string.
+func (a AchillesMetrics) String() string {
+	return string(a)
+}
+
+// AchillesMetrics type.
+const (
+	// AchillesResourceReadiness represents if the resource is ready or not.
+	AchillesResourceReadiness = "ResourceReadiness"
+	// AchillesResourceTrigger trigger for the resource.
+	AchillesResourceTrigger = "ResourceTrigger"
+	// AchillesResourceCondition condition of the resource see api.ConditionType.
+	AchillesResourceCondition = "ResourceCondition"
+	// AchillesStateDuration duration of the state.
+	AchillesStateDuration = "StateDuration"
+	// AchillesSuspend suspend reconciliation
+	AchillesSuspend = "ResourceSuspend"
+)
+
 // MetricsOptions are options for tuning the metrics instrumentation of this reconciler.
 type MetricsOptions struct {
 	// ConditionTypes is a list of additional condition types for which to instrument status condition metrics.
 	ConditionTypes []api.ConditionType
+	// DisableMetrics is a list of metrics to be disabled.
+	DisableMetrics []AchillesMetrics
+}
+
+// IsMetricDisabled check if metric is disabled for recording.
+func (m *MetricsOptions) IsMetricDisabled(metric AchillesMetrics) bool {
+	for _, v := range m.DisableMetrics {
+		if v == metric {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultCreateFunc is the default CreateFunc invoked if CreateFunc is not specified.

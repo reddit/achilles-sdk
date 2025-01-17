@@ -15,7 +15,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	achapi "github.com/reddit/achilles-sdk-api/api"
 	"github.com/reddit/achilles-sdk/pkg/fsm/metrics"
+	fsmtypes "github.com/reddit/achilles-sdk/pkg/fsm/types"
 	internalscheme "github.com/reddit/achilles-sdk/pkg/internal/scheme"
 	"github.com/reddit/achilles-sdk/pkg/internal/tests"
 	testv1alpha1 "github.com/reddit/achilles-sdk/pkg/internal/tests/api/test/v1alpha1"
@@ -53,7 +55,13 @@ var _ = BeforeSuite(func() {
 	Expect(testv1alpha1.AddToScheme(scheme)).ToNot(HaveOccurred())
 
 	reg = prometheus.NewRegistry()
-	metrics := metrics.MustMakeMetrics(scheme, reg)
+	options := fsmtypes.MetricsOptions{
+		ConditionTypes: []achapi.ConditionType{
+			InitialStateConditionType,
+		},
+		DisableMetrics: []fsmtypes.AchillesMetrics{},
+	}
+	metrics := metrics.MustMakeMetricsWithOptions(scheme, reg, options)
 
 	var err error
 	testEnv, err = test.NewEnvTestBuilder(ctx).
