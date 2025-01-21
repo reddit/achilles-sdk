@@ -47,7 +47,7 @@ func runTest(t *testing.T, name string, obj client.Object, expected int, metric 
 func TestRecordTrigger(t *testing.T) {
 	scheme := runtime.NewScheme()
 	metrics := MustMakeMetrics(scheme, prometheus.NewRegistry())
-	metricSuspended := initMetrics(scheme, []types.AchillesMetrics{types.AchillesResourceTrigger})
+	metricsDisabled := initMetrics(scheme, []types.AchillesMetrics{types.AchillesResourceTrigger})
 
 	tests := []struct {
 		name       string
@@ -69,9 +69,9 @@ func TestRecordTrigger(t *testing.T) {
 			name:       "record trigger metric is disabled",
 			obj:        &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"}},
 			expected:   0,
-			metric:     metricSuspended,
+			metric:     metricsDisabled,
 			metricName: "achilles_trigger",
-			collector:  metricSuspended.sink.triggerCounter,
+			collector:  metricsDisabled.sink.triggerCounter,
 		},
 	}
 
@@ -92,7 +92,7 @@ func TestRecordTrigger(t *testing.T) {
 func TestRecordSuspend(t *testing.T) {
 	scheme := runtime.NewScheme()
 	metrics := MustMakeMetrics(scheme, prometheus.NewRegistry())
-	metricSuspended := initMetrics(scheme, []types.AchillesMetrics{types.AchillesSuspend})
+	metricsDisabled := initMetrics(scheme, []types.AchillesMetrics{types.AchillesSuspend})
 
 	tests := []struct {
 		name       string
@@ -114,9 +114,9 @@ func TestRecordSuspend(t *testing.T) {
 			name:       "suspended metric is disabled",
 			obj:        &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"}},
 			expected:   0,
-			metric:     metricSuspended,
+			metric:     metricsDisabled,
 			metricName: "achilles_object_suspended",
-			collector:  metricSuspended.sink.suspendGauge,
+			collector:  metricsDisabled.sink.suspendGauge,
 		},
 	}
 
@@ -130,7 +130,7 @@ func TestRecordSuspend(t *testing.T) {
 func TestRecordStateDuration(t *testing.T) {
 	scheme := runtime.NewScheme()
 	metrics := MustMakeMetrics(scheme, prometheus.NewRegistry())
-	metricSuspended := initMetrics(scheme, []types.AchillesMetrics{types.AchillesStateDuration})
+	metricsDisabled := initMetrics(scheme, []types.AchillesMetrics{types.AchillesStateDuration})
 
 	tests := []struct {
 		name       string
@@ -152,9 +152,9 @@ func TestRecordStateDuration(t *testing.T) {
 			name:       "record duration metric is disabled",
 			obj:        &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"}},
 			expected:   0,
-			metric:     metricSuspended,
+			metric:     metricsDisabled,
 			metricName: "achilles_state_duration_seconds",
-			collector:  metricSuspended.sink.stateDurationHistogram,
+			collector:  metricsDisabled.sink.stateDurationHistogram,
 		},
 	}
 
