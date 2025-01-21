@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -131,7 +130,6 @@ func (m *Metrics) RecordStateDuration(gvk schema.GroupVersionKind, state string,
 	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesStateDuration) {
 		return
 	}
-	fmt.Printf("Record here\n")
 
 	m.sink.RecordStateDuration(gvk, state, duration)
 }
