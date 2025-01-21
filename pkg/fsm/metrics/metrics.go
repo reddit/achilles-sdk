@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -72,7 +73,7 @@ func (m *Metrics) DeleteTrigger(
 	requestObjKey client.ObjectKey,
 	controllerName string,
 ) {
-	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesResourceTrigger) {
+	if m.sink == nil {
 		return
 	}
 
@@ -89,9 +90,6 @@ func (m *Metrics) RecordReadiness(obj conditionedObject) {
 
 // DeleteReadiness deletes the meta.ReadyCondition status metric for the given obj.
 func (m *Metrics) DeleteReadiness(obj conditionedObject) {
-	if m.options.IsMetricDisabled(types.AchillesResourceReadiness) {
-		return
-	}
 	m.DeleteCondition(obj, api.TypeReady)
 }
 
@@ -133,6 +131,7 @@ func (m *Metrics) RecordStateDuration(gvk schema.GroupVersionKind, state string,
 	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesStateDuration) {
 		return
 	}
+	fmt.Printf("Record here\n")
 
 	m.sink.RecordStateDuration(gvk, state, duration)
 }
