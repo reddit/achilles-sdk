@@ -18,9 +18,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/reddit/achilles-sdk/pkg/fsm"
-	fsmhandler "github.com/reddit/achilles-sdk/pkg/fsm/handler"
 	"github.com/reddit/achilles-sdk/pkg/fsm/metrics"
 	fsmtypes "github.com/reddit/achilles-sdk/pkg/fsm/types"
 	internalscheme "github.com/reddit/achilles-sdk/pkg/internal/scheme"
@@ -115,10 +115,11 @@ var _ = Describe("Claim Controller", func() {
 						&v1alpha1.TestClaim{},
 						r.initialState(),
 						mgr.GetScheme(),
-					).WatchesChannel(
-						srcChan,
-						&handler.EnqueueRequestForObject{},
-						fsmhandler.TriggerTypeSelf,
+					).WatchesSource(
+						source.Channel(
+							srcChan,
+							&handler.EnqueueRequestForObject{},
+						),
 					)
 
 					rl := libratelimiter.NewDefaultProviderRateLimiter(libratelimiter.DefaultProviderRPS)

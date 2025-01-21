@@ -13,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -60,7 +59,7 @@ type Builder[T any, Obj apitypes.FSMResource[T]] struct {
 	controllerFns           []ControllerFunc
 	watches                 []watch
 	watchKinds              []watchKind
-	watchChannels           []watchChannel
+	watchesSource           []source.Source
 	opts                    []buildOption
 	maxConcurrentReconciles int
 	reconcilerOptions       fsmtypes.ReconcilerOptions[T, Obj]
@@ -79,13 +78,6 @@ type watchKind struct {
 	handler     handler.EventHandler
 	predicates  []predicate.Predicate
 	triggerType fsmhandler.TriggerType
-}
-
-type watchChannel struct {
-	source      <-chan event.GenericEvent
-	handler     handler.EventHandler
-	triggerType fsmhandler.TriggerType
-	opts        []source.ChannelOpt[client.Object, reconcile.Request]
 }
 
 // NewBuilder returns a builder that builds a function wiring up a logical FSM controller to a manager.
@@ -178,19 +170,11 @@ func (b *Builder[T, Obj]) WatchesKind(
 	return b
 }
 
-// WatchesChannel adds a new watch to the controller for events originating outside the cluster.
-func (b *Builder[T, Obj]) WatchesChannel(
-	source <-chan event.GenericEvent,
-	handler handler.EventHandler,
-	triggerType fsmhandler.TriggerType,
-	opts ...source.ChannelOpt[client.Object, reconcile.Request],
+// WatchesSource adds a new watch to the controller for events originating outside the cluster.
+func (b *Builder[T, Obj]) WatchesSource(
+	src source.Source,
 ) *Builder[T, Obj] {
-	b.watchChannels = append(b.watchChannels, watchChannel{
-		source:      source,
-		handler:     handler,
-		triggerType: triggerType,
-		opts:        opts,
-	})
+	b.watchesSource = append(b.watchesSource, src)
 	return b
 }
 
@@ -272,14 +256,8 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			builder.WatchesRawSource(src)
 		}
 
-		for _, w := range b.watchChannels {
-			src := source.Channel(
-				w.source,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, w.handler, w.triggerType),
-				w.opts...,
-			)
-
-			builder.WatchesRawSource(src)
+		for _, w := range b.watchesSource {
+			builder.WatchesRawSource(w)
 		}
 
 		// custom controller builder options

@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -42,7 +41,7 @@ type ClaimBuilder[T any, U any, ClaimedType apitypes.ClaimedType[T], ClaimType a
 	controllerFns           []ControllerFunc
 	watches                 []watch
 	watchKinds              []watchKind
-	watchChannels           []watchChannel
+	watchSources            []source.Source
 	opts                    []buildOption
 	maxConcurrentReconciles int
 }
@@ -142,19 +141,11 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesKind(
 	return b
 }
 
-// WatchesChannel adds a new watch to the controller for events originating outside the cluster.
-func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesChannel(
-	source <-chan event.GenericEvent,
-	handler handler.EventHandler,
-	triggerType fsmhandler.TriggerType,
-	opts ...source.ChannelOpt[client.Object, reconcile.Request],
+// WatchesSource adds a new watch to the controller for events originating outside the cluster.
+func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesSource(
+	src source.Source,
 ) *ClaimBuilder[T, U, ClaimedType, ClaimType] {
-	b.watchChannels = append(b.watchChannels, watchChannel{
-		source:      source,
-		handler:     handler,
-		triggerType: triggerType,
-		opts:        opts,
-	})
+	b.watchSources = append(b.watchSources, src)
 	return b
 }
 
@@ -293,14 +284,8 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 			claimedBuilder.WatchesRawSource(src)
 		}
 
-		for _, w := range b.watchChannels {
-			src := source.Channel(
-				w.source,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, w.handler, w.triggerType),
-				w.opts...,
-			)
-
-			claimedBuilder.WatchesRawSource(src)
+		for _, w := range b.watchSources {
+			claimedBuilder.WatchesRawSource(w)
 		}
 
 		// custom controller builder options
