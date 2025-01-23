@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/reddit/achilles-sdk-api/api"
+	"github.com/reddit/achilles-sdk/pkg/fsm/types"
 	"github.com/reddit/achilles-sdk/pkg/meta"
 )
 
@@ -18,8 +19,9 @@ type conditionedObject interface {
 }
 
 type Metrics struct {
-	scheme *runtime.Scheme
-	sink   *Sink
+	scheme  *runtime.Scheme
+	sink    *Sink
+	options types.MetricsOptions
 }
 
 // MustMakeMetrics creates a new Metrics with a new metrics Sink, and the Metrics.Scheme set to that of the given manager.
@@ -30,6 +32,18 @@ func MustMakeMetrics(scheme *runtime.Scheme, registrar prometheus.Registerer) *M
 	return &Metrics{
 		scheme: scheme,
 		sink:   metricsRecorder,
+	}
+}
+
+// MustMakeMetricsWithOptions creates a new Metrics with a new metrics Sink, the Metrics.Scheme set to that of the given manager and MetricsOptions.
+func MustMakeMetricsWithOptions(scheme *runtime.Scheme, registrar prometheus.Registerer, options types.MetricsOptions) *Metrics {
+	metricsRecorder := NewSink()
+	registrar.MustRegister(metricsRecorder.Collectors()...)
+
+	return &Metrics{
+		scheme:  scheme,
+		sink:    metricsRecorder,
+		options: options,
 	}
 }
 
@@ -46,7 +60,7 @@ func (m *Metrics) RecordTrigger(
 	triggerType string,
 	controllerName string,
 ) {
-	if m.sink == nil {
+	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesResourceTrigger) {
 		return
 	}
 
@@ -67,6 +81,9 @@ func (m *Metrics) DeleteTrigger(
 
 // RecordReadiness records the meta.ReadyCondition status for the given obj.
 func (m *Metrics) RecordReadiness(obj conditionedObject) {
+	if m.options.IsMetricDisabled(types.AchillesResourceReadiness) {
+		return
+	}
 	m.RecordCondition(obj, api.TypeReady)
 }
 
@@ -77,7 +94,7 @@ func (m *Metrics) DeleteReadiness(obj conditionedObject) {
 
 // RecordCondition records the status of the given conditionType for the given obj.
 func (m *Metrics) RecordCondition(obj conditionedObject, conditionType api.ConditionType) {
-	if m.sink == nil {
+	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesResourceCondition) {
 		return
 	}
 
@@ -94,7 +111,7 @@ func (m *Metrics) RecordCondition(obj conditionedObject, conditionType api.Condi
 
 // DeleteCondition deletes the status of the given conditionType for the given obj.
 func (m *Metrics) DeleteCondition(obj conditionedObject, conditionType api.ConditionType) {
-	if m.sink == nil {
+	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesResourceCondition) {
 		return
 	}
 
@@ -110,7 +127,7 @@ func (m *Metrics) DeleteCondition(obj conditionedObject, conditionType api.Condi
 
 // RecordStateDuration records the duration of the state for the given GVK.
 func (m *Metrics) RecordStateDuration(gvk schema.GroupVersionKind, state string, duration time.Duration) {
-	if m.sink == nil {
+	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesStateDuration) {
 		return
 	}
 
@@ -119,7 +136,7 @@ func (m *Metrics) RecordStateDuration(gvk schema.GroupVersionKind, state string,
 
 // RecordSuspend records status of the object to be 1 if suspended and 0 if unsuspended
 func (m *Metrics) RecordSuspend(obj client.Object, suspend bool) {
-	if m.sink == nil {
+	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesSuspend) {
 		return
 	}
 
