@@ -142,6 +142,9 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesRemoteKind(
 }
 
 // WatchesRawSource adds a new watch to the controller for events originating outside the cluster.
+//
+// This watch doesn't wrap the event handler with the FSM handler, so it's up to the caller to do so. You can use the
+// fsmhandler.NewObservedEventHandler to wrap the handler with the FSM handler.
 func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesRawSource(src source.Source) *ClaimBuilder[T, U, ClaimedType, ClaimType] {
 	b.watchRawSources = append(b.watchRawSources, src)
 	return b
