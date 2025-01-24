@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -41,8 +40,8 @@ type ClaimBuilder[T any, U any, ClaimedType apitypes.ClaimedType[T], ClaimType a
 	managedTypes            []schema.GroupVersionKind
 	controllerFns           []ControllerFunc
 	watches                 []watch
-	watchKinds              []watchKind
-	watchChannels           []watchChannel
+	watchRemoteKinds        []watchRemoteKind
+	watchSources            []source.Source
 	opts                    []buildOption
 	maxConcurrentReconciles int
 }
@@ -123,16 +122,16 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Watches(
 	return b
 }
 
-// WatchesKind adds a new watch to the controller for a specific kind.
-// Use this method for events originating in the cluster.
-func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesKind(
+// WatchesRemoteKind adds a new watch to the controller for a specific kind located in a remote cluster.
+// The remote cluster is specified through cache.Cache.
+func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesRemoteKind(
 	cache cache.Cache,
 	obj client.Object,
 	handler handler.EventHandler,
 	triggerType fsmhandler.TriggerType,
 	predicates ...predicate.Predicate,
 ) *ClaimBuilder[T, U, ClaimedType, ClaimType] {
-	b.watchKinds = append(b.watchKinds, watchKind{
+	b.watchRemoteKinds = append(b.watchRemoteKinds, watchRemoteKind{
 		cache:       cache,
 		obj:         obj,
 		handler:     handler,
@@ -142,19 +141,9 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesKind(
 	return b
 }
 
-// WatchesChannel adds a new watch to the controller for events originating outside the cluster.
-func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesChannel(
-	source <-chan event.GenericEvent,
-	handler handler.EventHandler,
-	triggerType fsmhandler.TriggerType,
-	opts ...source.ChannelOpt[client.Object, reconcile.Request],
-) *ClaimBuilder[T, U, ClaimedType, ClaimType] {
-	b.watchChannels = append(b.watchChannels, watchChannel{
-		source:      source,
-		handler:     handler,
-		triggerType: triggerType,
-		opts:        opts,
-	})
+// WatchesSource adds a new watch to the controller for events originating outside the cluster.
+func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesSource(src source.Source) *ClaimBuilder[T, U, ClaimedType, ClaimType] {
+	b.watchSources = append(b.watchSources, src)
 	return b
 }
 
@@ -282,7 +271,7 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 			)
 		}
 
-		for _, w := range b.watchKinds {
+		for _, w := range b.watchRemoteKinds {
 			src := source.Kind(
 				w.cache,
 				w.obj,
@@ -293,14 +282,8 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 			claimedBuilder.WatchesRawSource(src)
 		}
 
-		for _, w := range b.watchChannels {
-			src := source.Channel(
-				w.source,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, w.handler, w.triggerType),
-				w.opts...,
-			)
-
-			claimedBuilder.WatchesRawSource(src)
+		for _, w := range b.watchSources {
+			claimedBuilder.WatchesRawSource(w)
 		}
 
 		// custom controller builder options

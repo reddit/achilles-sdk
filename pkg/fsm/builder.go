@@ -13,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -59,8 +58,8 @@ type Builder[T any, Obj apitypes.FSMResource[T]] struct {
 	managedTypes            []schema.GroupVersionKind
 	controllerFns           []ControllerFunc
 	watches                 []watch
-	watchKinds              []watchKind
-	watchChannels           []watchChannel
+	watchRemoteKinds        []watchRemoteKind
+	watchSources            []source.Source
 	opts                    []buildOption
 	maxConcurrentReconciles int
 	reconcilerOptions       fsmtypes.ReconcilerOptions[T, Obj]
@@ -73,19 +72,12 @@ type watch struct {
 	triggerType fsmhandler.TriggerType
 }
 
-type watchKind struct {
+type watchRemoteKind struct {
 	cache       cache.Cache
 	obj         client.Object
 	handler     handler.EventHandler
 	predicates  []predicate.Predicate
 	triggerType fsmhandler.TriggerType
-}
-
-type watchChannel struct {
-	source      <-chan event.GenericEvent
-	handler     handler.EventHandler
-	triggerType fsmhandler.TriggerType
-	opts        []source.ChannelOpt[client.Object, reconcile.Request]
 }
 
 // NewBuilder returns a builder that builds a function wiring up a logical FSM controller to a manager.
@@ -159,16 +151,16 @@ func (b *Builder[T, Obj]) Watches(
 	return b
 }
 
-// WatchesKind adds a new watch to the controller for a specific kind.
-// Use this method for events originating in the cluster.
-func (b *Builder[T, Obj]) WatchesKind(
+// WatchesRemoteKind adds a new watch to the controller for a specific kind located in a remote cluster.
+// The remote cluster is specified through cache.Cache.
+func (b *Builder[T, Obj]) WatchesRemoteKind(
 	cache cache.Cache,
 	obj client.Object,
 	handler handler.EventHandler,
 	triggerType fsmhandler.TriggerType,
 	predicates ...predicate.Predicate,
 ) *Builder[T, Obj] {
-	b.watchKinds = append(b.watchKinds, watchKind{
+	b.watchRemoteKinds = append(b.watchRemoteKinds, watchRemoteKind{
 		cache:       cache,
 		obj:         obj,
 		handler:     handler,
@@ -178,19 +170,9 @@ func (b *Builder[T, Obj]) WatchesKind(
 	return b
 }
 
-// WatchesChannel adds a new watch to the controller for events originating outside the cluster.
-func (b *Builder[T, Obj]) WatchesChannel(
-	source <-chan event.GenericEvent,
-	handler handler.EventHandler,
-	triggerType fsmhandler.TriggerType,
-	opts ...source.ChannelOpt[client.Object, reconcile.Request],
-) *Builder[T, Obj] {
-	b.watchChannels = append(b.watchChannels, watchChannel{
-		source:      source,
-		handler:     handler,
-		triggerType: triggerType,
-		opts:        opts,
-	})
+// WatchesSource adds a new watch to the controller for events originating outside the cluster.
+func (b *Builder[T, Obj]) WatchesSource(src source.Source) *Builder[T, Obj] {
+	b.watchSources = append(b.watchSources, src)
 	return b
 }
 
@@ -261,7 +243,7 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			)
 		}
 
-		for _, w := range b.watchKinds {
+		for _, w := range b.watchRemoteKinds {
 			src := source.Kind(
 				w.cache,
 				w.obj,
@@ -272,14 +254,8 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			builder.WatchesRawSource(src)
 		}
 
-		for _, w := range b.watchChannels {
-			src := source.Channel(
-				w.source,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, w.handler, w.triggerType),
-				w.opts...,
-			)
-
-			builder.WatchesRawSource(src)
+		for _, w := range b.watchSources {
+			builder.WatchesRawSource(w)
 		}
 
 		// custom controller builder options
