@@ -115,7 +115,7 @@ var _ = Describe("Claim Controller", func() {
 						&v1alpha1.TestClaim{},
 						r.initialState(),
 						mgr.GetScheme(),
-					).WatchesSource(source.Channel(srcChan, &handler.EnqueueRequestForObject{}))
+					).WatchesRawSource(source.Channel(srcChan, &handler.EnqueueRequestForObject{}))
 
 					rl := libratelimiter.NewDefaultProviderRateLimiter(libratelimiter.DefaultProviderRPS)
 					reg := prometheus.NewRegistry()

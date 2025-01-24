@@ -59,7 +59,7 @@ type Builder[T any, Obj apitypes.FSMResource[T]] struct {
 	controllerFns           []ControllerFunc
 	watches                 []watch
 	watchRemoteKinds        []watchRemoteKind
-	watchSources            []source.Source
+	watchRawSources         []source.Source
 	opts                    []buildOption
 	maxConcurrentReconciles int
 	reconcilerOptions       fsmtypes.ReconcilerOptions[T, Obj]
@@ -170,9 +170,9 @@ func (b *Builder[T, Obj]) WatchesRemoteKind(
 	return b
 }
 
-// WatchesSource adds a new watch to the controller for events originating outside the cluster.
-func (b *Builder[T, Obj]) WatchesSource(src source.Source) *Builder[T, Obj] {
-	b.watchSources = append(b.watchSources, src)
+// WatchesRawSource adds a new watch to the controller for events originating outside the cluster.
+func (b *Builder[T, Obj]) WatchesRawSource(src source.Source) *Builder[T, Obj] {
+	b.watchRawSources = append(b.watchRawSources, src)
 	return b
 }
 
@@ -254,7 +254,7 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			builder.WatchesRawSource(src)
 		}
 
-		for _, w := range b.watchSources {
+		for _, w := range b.watchRawSources {
 			builder.WatchesRawSource(w)
 		}
 

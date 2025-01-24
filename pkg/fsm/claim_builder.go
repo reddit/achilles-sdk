@@ -41,7 +41,7 @@ type ClaimBuilder[T any, U any, ClaimedType apitypes.ClaimedType[T], ClaimType a
 	controllerFns           []ControllerFunc
 	watches                 []watch
 	watchRemoteKinds        []watchRemoteKind
-	watchSources            []source.Source
+	watchRawSources         []source.Source
 	opts                    []buildOption
 	maxConcurrentReconciles int
 }
@@ -141,9 +141,9 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesRemoteKind(
 	return b
 }
 
-// WatchesSource adds a new watch to the controller for events originating outside the cluster.
-func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesSource(src source.Source) *ClaimBuilder[T, U, ClaimedType, ClaimType] {
-	b.watchSources = append(b.watchSources, src)
+// WatchesRawSource adds a new watch to the controller for events originating outside the cluster.
+func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesRawSource(src source.Source) *ClaimBuilder[T, U, ClaimedType, ClaimType] {
+	b.watchRawSources = append(b.watchRawSources, src)
 	return b
 }
 
@@ -282,7 +282,7 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 			claimedBuilder.WatchesRawSource(src)
 		}
 
-		for _, w := range b.watchSources {
+		for _, w := range b.watchRawSources {
 			claimedBuilder.WatchesRawSource(w)
 		}
 
