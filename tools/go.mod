@@ -2,8 +2,6 @@ module tools
 
 go 1.23.0
 
-toolchain go1.23.4
-
 require (
 	github.com/clamoriniere/crd-to-markdown v0.0.3
 	github.com/rinchsan/gosimports v0.3.8
