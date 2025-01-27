@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/reddit/achilles-sdk-api/api"
 	"github.com/reddit/achilles-sdk/pkg/fsm"
@@ -27,7 +28,7 @@ type reconciler struct {
 func setupTestClaimController(
 	log *zap.SugaredLogger,
 	mgr ctrl.Manager,
-	rl workqueue.RateLimiter,
+	rl workqueue.TypedRateLimiter[reconcile.Request],
 	c *io.ClientApplicator,
 	metrics *metrics.Metrics,
 ) error {

@@ -44,7 +44,7 @@ const (
 func SetupController(
 	log *zap.SugaredLogger,
 	mgr ctrl.Manager,
-	rl workqueue.RateLimiter,
+	rl workqueue.TypedRateLimiter[reconcile.Request],
 	c *io.ClientApplicator,
 	metrics *metrics.Metrics,
 	disableAutoCreate *atomic.Bool,

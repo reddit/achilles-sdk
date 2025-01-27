@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlbuilder "sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -39,7 +40,8 @@ type ClaimBuilder[T any, U any, ClaimedType apitypes.ClaimedType[T], ClaimType a
 	managedTypes            []schema.GroupVersionKind
 	controllerFns           []ControllerFunc
 	watches                 []watch
-	watchesRawSource        []watchRawSource
+	watchRemoteKinds        []watchRemoteKind
+	watchRawSources         []source.Source
 	opts                    []buildOption
 	maxConcurrentReconciles int
 }
@@ -120,20 +122,31 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Watches(
 	return b
 }
 
-// WatchesRawSource adds a custom raw source watch to the controller.
-// Prefer using `Watches(...)` unless you need controller-runtime's lower level API.
-func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesRawSource(
-	src source.Source,
+// WatchesRemoteKind adds a new watch to the controller for a specific kind located in a remote cluster.
+// The remote cluster is specified through cache.Cache.
+func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesRemoteKind(
+	cache cache.Cache,
+	obj client.Object,
 	handler handler.EventHandler,
 	triggerType fsmhandler.TriggerType,
-	opts ...ctrlbuilder.WatchesOption,
+	predicates ...predicate.Predicate,
 ) *ClaimBuilder[T, U, ClaimedType, ClaimType] {
-	b.watchesRawSource = append(b.watchesRawSource, watchRawSource{
-		src:         src,
+	b.watchRemoteKinds = append(b.watchRemoteKinds, watchRemoteKind{
+		cache:       cache,
+		obj:         obj,
 		handler:     handler,
 		triggerType: triggerType,
-		opts:        opts,
+		predicates:  predicates,
 	})
+	return b
+}
+
+// WatchesRawSource adds a new watch to the controller for events originating outside the cluster.
+//
+// This watch doesn't wrap the event handler with the FSM handler, so it's up to the caller to do so. You can use the
+// fsmhandler.NewObservedEventHandler to wrap the handler with the FSM handler.
+func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) WatchesRawSource(src source.Source) *ClaimBuilder[T, U, ClaimedType, ClaimType] {
+	b.watchRawSources = append(b.watchRawSources, src)
 	return b
 }
 
@@ -149,7 +162,7 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 	return func(
 		mgr ctrl.Manager,
 		log *zap.SugaredLogger,
-		rl workqueue.RateLimiter,
+		rl workqueue.TypedRateLimiter[reconcile.Request],
 		metrics *metrics.Metrics,
 	) error {
 		objGVK := meta.MustTypedObjectRefFromObject(b.obj, mgr.GetScheme())
@@ -253,20 +266,27 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 		}
 
 		// wire up custom watches to claimed
-		for _, watch := range b.watches {
+		for _, w := range b.watches {
 			claimedBuilder.Watches(
-				watch.object,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, watch.handler, watch.triggerType),
-				watch.opts...,
+				w.object,
+				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, w.handler, w.triggerType),
+				w.opts...,
 			)
 		}
 
-		for _, watch := range b.watchesRawSource {
-			claimedBuilder.WatchesRawSource(
-				watch.src,
-				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, watch.handler, watch.triggerType),
-				watch.opts...,
+		for _, w := range b.watchRemoteKinds {
+			src := source.Kind(
+				w.cache,
+				w.obj,
+				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, w.handler, w.triggerType),
+				w.predicates...,
 			)
+
+			claimedBuilder.WatchesRawSource(src)
+		}
+
+		for _, w := range b.watchRawSources {
+			claimedBuilder.WatchesRawSource(w)
 		}
 
 		// custom controller builder options

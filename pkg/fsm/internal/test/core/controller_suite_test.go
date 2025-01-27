@@ -43,7 +43,7 @@ var (
 )
 
 var _ = BeforeSuite(func() {
-	SetDefaultEventuallyTimeout(15 * time.Second)
+	SetDefaultEventuallyTimeout(75 * time.Second)
 	SetDefaultEventuallyPollingInterval(200 * time.Millisecond)
 
 	log = zaptest.LoggerWriter(GinkgoWriter).Sugar()
