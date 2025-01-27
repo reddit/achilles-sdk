@@ -17,6 +17,7 @@ const (
 // NewGlobal returns a token bucket rate limiter meant for limiting the number
 // of average total requeues per second for all controllers registered with a
 // controller manager. The bucket size (i.e. allowed burst) is rps * 10.
+// Note that the type parameter is ignored here. The rate limit is global.
 func NewGlobal(rps int) *workqueue.TypedBucketRateLimiter[reconcile.Request] {
 	return &workqueue.TypedBucketRateLimiter[reconcile.Request]{
 		Limiter: rate.NewLimiter(rate.Limit(rps), rps*10), // burst = rps * 10
