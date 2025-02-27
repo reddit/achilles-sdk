@@ -91,7 +91,8 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	log := r.log.With("request", req, "requestId", requestId)
 	log.Debug("entering reconcile")
-	defer log.Debug("exiting reconcile")
+	startedAt := time.Now()
+	defer func() { log.Debug("finished reconcile in %s", time.Since(startedAt)) }()
 
 	// record metrics
 	defer func() {

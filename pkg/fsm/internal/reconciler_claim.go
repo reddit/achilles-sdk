@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
@@ -51,7 +52,8 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 	}
 	log := r.Log.With("request", req, "requestId", requestId)
 	log.Debug("entering reconcile")
-	defer log.Debug("exiting reconcile")
+	startedAt := time.Now()
+	defer func() { log.Debug("finished reconcile in %s", time.Since(startedAt)) }()
 
 	claim := Claim(new(U))
 	if err := r.Client.Get(ctx, req.NamespacedName, claim); k8serrors.IsNotFound(err) {
