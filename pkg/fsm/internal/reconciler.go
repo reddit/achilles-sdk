@@ -14,8 +14,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 
 	"github.com/reddit/achilles-sdk-api/api"
 	apitypes "github.com/reddit/achilles-sdk-api/pkg/types"
@@ -83,7 +85,11 @@ func NewFSMReconciler[T any, Obj apitypes.FSMResource[T]](
 }
 
 func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.log.With("request", req)
+	requestId := ctrlcontroller.ReconcileIDFromContext(ctx)
+	if requestId == "" {
+		requestId = uuid.NewUUID()
+	}
+	log := r.log.With("request", req, "requestId", requestId)
 	log.Debug("entering reconcile")
 	defer log.Debug("exiting reconcile")
 
