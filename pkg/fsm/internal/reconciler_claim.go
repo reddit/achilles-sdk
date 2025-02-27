@@ -11,7 +11,6 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/uuid"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
@@ -47,9 +46,6 @@ type BeforeDelete[
 
 func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	requestId := ctrlcontroller.ReconcileIDFromContext(ctx)
-	if requestId == "" {
-		requestId = uuid.NewUUID()
-	}
 	log := r.Log.With("request", req, "requestId", requestId)
 	log.Debug("entering reconcile")
 	startedAt := time.Now()
