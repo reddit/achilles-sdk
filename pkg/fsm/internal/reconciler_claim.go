@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
@@ -12,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 
 	"github.com/reddit/achilles-sdk-api/api"
 	apitypes "github.com/reddit/achilles-sdk-api/pkg/types"
@@ -43,9 +45,11 @@ type BeforeDelete[
 ] func(Claim, Claimed) error
 
 func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.With("request", req)
+	requestId := ctrlcontroller.ReconcileIDFromContext(ctx)
+	log := r.Log.With("request", req, "requestId", requestId)
 	log.Debug("entering reconcile")
-	defer log.Debug("exiting reconcile")
+	startedAt := time.Now()
+	defer func() { log.Debugf("finished reconcile in %s", time.Since(startedAt)) }()
 
 	claim := Claim(new(U))
 	if err := r.Client.Get(ctx, req.NamespacedName, claim); k8serrors.IsNotFound(err) {
