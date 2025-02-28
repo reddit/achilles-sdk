@@ -49,7 +49,7 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 	log := r.Log.With("request", req, "requestId", requestId)
 	log.Debug("entering reconcile")
 	startedAt := time.Now()
-	defer func() { log.Debug("finished reconcile in %s", time.Since(startedAt)) }()
+	defer func() { log.Debugf("finished reconcile in %s", time.Since(startedAt)) }()
 
 	claim := Claim(new(U))
 	if err := r.Client.Get(ctx, req.NamespacedName, claim); k8serrors.IsNotFound(err) {
