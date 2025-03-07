@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/reddit/achilles-sdk/pkg/internal/tests/api/test/v1alpha1"
 	"github.com/reddit/achilles-sdk/pkg/io"
 	"github.com/reddit/achilles-sdk/pkg/meta"
 )
@@ -226,6 +227,106 @@ var _ = Describe("Applicator", func() {
 				actual := &corev1.Service{}
 				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), actual)).ToNot(HaveOccurred())
 				g.Expect(actual.Spec.LoadBalancerIP).To(Equal(""))
+			}).Should(Succeed())
+		})
+
+		By("allowing status-only patches to CRDs without a status subresource", func() {
+
+			// TestFoo has a status subresource, so we must use ApplyStatus() to persist changes.
+			// Any status changes made by Apply() will be ignored by the k8s apiserver.
+			foo := &v1alpha1.TestFoo{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "foo-patch",
+					Namespace: "default",
+				},
+				Spec: v1alpha1.TestFooSpec{
+					TestField: "test",
+				},
+				Status: v1alpha1.TestFooStatus{},
+			}
+
+			// TestBar has no status subresource, so we use Apply() instead of ApplyStatus()
+			bar := &v1alpha1.TestBar{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bar-patch",
+					Namespace: "default",
+				},
+				Spec: v1alpha1.TestBarSpec{
+					TestField: "test",
+				},
+				Status: v1alpha1.TestBarStatus{},
+			}
+
+			Expect(applicator.Apply(ctx, foo)).To(Succeed())
+			foo.Status.TestField = "test"
+			Expect(applicator.Apply(ctx, foo)).To(Succeed())
+
+			Expect(applicator.Apply(ctx, bar)).To(Succeed())
+			bar.Status.TestField = "test"
+			Expect(applicator.Apply(ctx, bar)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actualFoo := &v1alpha1.TestFoo{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(foo), actualFoo)).ToNot(HaveOccurred())
+				g.Expect(actualFoo.Status).To(BeComparableTo(v1alpha1.TestFooStatus{
+					TestField: "", // applicator Apply() doesn't set status if status subresource exists on the CRD
+				}))
+
+				actualBar := &v1alpha1.TestBar{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(bar), actualBar)).ToNot(HaveOccurred())
+				g.Expect(actualBar.Status).To(BeComparableTo(v1alpha1.TestBarStatus{
+					TestField: "test",
+				}))
+			}).Should(Succeed())
+		})
+
+		By("allowing status-only updates to CRDs without a status subresource", func() {
+
+			// TestFoo has a status subresource, so we must use ApplyStatus() to persist changes.
+			// Any status changes made by Apply() will be ignored by the k8s apiserver.
+			foo := &v1alpha1.TestFoo{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "foo-update",
+					Namespace: "default",
+				},
+				Spec: v1alpha1.TestFooSpec{
+					TestField: "test",
+				},
+				Status: v1alpha1.TestFooStatus{},
+			}
+
+			// TestBar has no status subresource, so we use Apply() instead of ApplyStatus()
+			bar := &v1alpha1.TestBar{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bar-update",
+					Namespace: "default",
+				},
+				Spec: v1alpha1.TestBarSpec{
+					TestField: "test",
+				},
+				Status: v1alpha1.TestBarStatus{},
+			}
+
+			Expect(applicator.Apply(ctx, foo, io.AsUpdate())).To(Succeed())
+			foo.Status.TestField = "test"
+			Expect(applicator.Apply(ctx, foo, io.AsUpdate())).To(Succeed())
+
+			Expect(applicator.Apply(ctx, bar, io.AsUpdate())).To(Succeed())
+			bar.Status.TestField = "test"
+			Expect(applicator.Apply(ctx, bar, io.AsUpdate())).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actualFoo := &v1alpha1.TestFoo{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(foo), actualFoo)).ToNot(HaveOccurred())
+				g.Expect(actualFoo.Status).To(BeComparableTo(v1alpha1.TestFooStatus{
+					TestField: "", // applicator Apply() doesn't set status if status subresource exists on the CRD
+				}))
+
+				actualBar := &v1alpha1.TestBar{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(bar), actualBar)).ToNot(HaveOccurred())
+				g.Expect(actualBar.Status).To(BeComparableTo(v1alpha1.TestBarStatus{
+					TestField: "test",
+				}))
 			}).Should(Succeed())
 		})
 
