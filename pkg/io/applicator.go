@@ -124,7 +124,7 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	}
 
 	// remove the status if it's a subresource
-	p, err := fieldpath.MakePath("status")
+	statusFieldPath, err := fieldpath.MakePath("status")
 	if err != nil {
 		return fmt.Errorf("error creating field path: %w", err)
 	}
@@ -137,15 +137,15 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 			// if the field is managed by root, then it's not a status subresource
 			continue
 		}
-		var s fieldpath.Set
+		var fieldPaths fieldpath.Set
 		if managedFields.FieldsType != "FieldsV1" {
 			return fmt.Errorf("unsupported fields type %v", managedFields.FieldsType)
 		}
-		err := s.FromJSON(bytes.NewReader(managedFields.FieldsV1.Raw))
+		err := fieldPaths.FromJSON(bytes.NewReader(managedFields.FieldsV1.Raw))
 		if err != nil {
 			return fmt.Errorf("error parsing managedFields for %v: %w", m, err)
 		}
-		if s.Has(p) {
+		if fieldPaths.Has(statusFieldPath) {
 			hasStatusSubresource = true
 		}
 	}

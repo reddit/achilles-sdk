@@ -20,8 +20,8 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: TestBar is a simple test resource; notably it improperly sets
-          the subresource status, unlike TestFoo.
+        description: TestBar is a simple test resource; notably, it does not subresource
+          the status field, unlike TestFoo.
         properties:
           apiVersion:
             description: |-

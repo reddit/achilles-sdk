@@ -260,24 +260,20 @@ var _ = Describe("Applicator", func() {
 			Expect(applicator.Apply(ctx, foo)).To(Succeed())
 			foo.Status.TestField = "test"
 			Expect(applicator.Apply(ctx, foo)).To(Succeed())
+			actualFoo := &v1alpha1.TestFoo{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(foo), actualFoo)).To(Succeed())
+			Expect(actualFoo.Status).To(BeComparableTo(v1alpha1.TestFooStatus{
+				TestField: "", // applicator Apply() doesn't set status if status subresource exists on the CRD
+			}))
 
 			Expect(applicator.Apply(ctx, bar)).To(Succeed())
 			bar.Status.TestField = "test"
 			Expect(applicator.Apply(ctx, bar)).To(Succeed())
-
-			Eventually(func(g Gomega) {
-				actualFoo := &v1alpha1.TestFoo{}
-				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(foo), actualFoo)).ToNot(HaveOccurred())
-				g.Expect(actualFoo.Status).To(BeComparableTo(v1alpha1.TestFooStatus{
-					TestField: "", // applicator Apply() doesn't set status if status subresource exists on the CRD
-				}))
-
-				actualBar := &v1alpha1.TestBar{}
-				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(bar), actualBar)).ToNot(HaveOccurred())
-				g.Expect(actualBar.Status).To(BeComparableTo(v1alpha1.TestBarStatus{
-					TestField: "test",
-				}))
-			}).Should(Succeed())
+			actualBar := &v1alpha1.TestBar{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(bar), actualBar)).To(Succeed())
+			Expect(actualBar.Status).To(BeComparableTo(v1alpha1.TestBarStatus{
+				TestField: "test",
+			}))
 		})
 
 		By("allowing status-only updates to CRDs without a status subresource", func() {
@@ -310,24 +306,20 @@ var _ = Describe("Applicator", func() {
 			Expect(applicator.Apply(ctx, foo, io.AsUpdate())).To(Succeed())
 			foo.Status.TestField = "test"
 			Expect(applicator.Apply(ctx, foo, io.AsUpdate())).To(Succeed())
+			actualFoo := &v1alpha1.TestFoo{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(foo), actualFoo)).To(Succeed())
+			Expect(actualFoo.Status).To(BeComparableTo(v1alpha1.TestFooStatus{
+				TestField: "", // applicator Apply() doesn't set status if status subresource exists on the CRD
+			}))
 
 			Expect(applicator.Apply(ctx, bar, io.AsUpdate())).To(Succeed())
 			bar.Status.TestField = "test"
 			Expect(applicator.Apply(ctx, bar, io.AsUpdate())).To(Succeed())
-
-			Eventually(func(g Gomega) {
-				actualFoo := &v1alpha1.TestFoo{}
-				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(foo), actualFoo)).ToNot(HaveOccurred())
-				g.Expect(actualFoo.Status).To(BeComparableTo(v1alpha1.TestFooStatus{
-					TestField: "", // applicator Apply() doesn't set status if status subresource exists on the CRD
-				}))
-
-				actualBar := &v1alpha1.TestBar{}
-				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(bar), actualBar)).ToNot(HaveOccurred())
-				g.Expect(actualBar.Status).To(BeComparableTo(v1alpha1.TestBarStatus{
-					TestField: "test",
-				}))
-			}).Should(Succeed())
+			actualBar := &v1alpha1.TestBar{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(bar), actualBar)).To(Succeed())
+			Expect(actualBar.Status).To(BeComparableTo(v1alpha1.TestBarStatus{
+				TestField: "test",
+			}))
 		})
 
 		By("specifying no owner refs", func() {

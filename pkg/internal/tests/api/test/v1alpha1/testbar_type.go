@@ -13,7 +13,7 @@ type TestBarSpec struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:resource:categories={test,infrared}
 
-// TestBar is a simple test resource; notably it improperly sets the subresource status, unlike TestFoo.
+// TestBar is a simple test resource; notably, it does not subresource the status field, unlike TestFoo.
 type TestBar struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
