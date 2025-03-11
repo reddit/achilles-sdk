@@ -3,9 +3,11 @@ package io_test
 import (
 	"time"
 
+	"github.com/google/go-cmp/cmp/cmpopts"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -25,6 +27,17 @@ func init() {
 }
 
 var _ = Describe("Applicator", func() {
+
+	testResourceNoSubresource := &v1alpha1.TestResourceWithoutSubresource{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-resource-no-subresource",
+			Namespace: "default",
+		},
+		Spec: v1alpha1.TestResourceWithoutSubresourceSpec{
+			TestField: "test",
+		},
+	}
+
 	BeforeEach(func() {
 		applicator = &io.ClientApplicator{
 			Client:     c,
@@ -126,6 +139,176 @@ var _ = Describe("Applicator", func() {
 				// spec should be equal
 				g.Expect(actual.Spec).To(Equal(expectedSvc.Spec))
 			}).Should(Succeed())
+		})
+
+		By("silently ignore status subresource patches", func() {
+			// update svc to latest state
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), svc)).To(Succeed())
+			Expect(svc.Status).To(BeComparableTo(corev1.ServiceStatus{}))
+
+			// corev1.Service has a status subresource, so we must use ApplyStatus() to persist changes.
+			// Any status changes made by Apply() will be ignored by the k8s apiserver.
+			svcPatch := svc.DeepCopy()
+			expectedSvc := svc.DeepCopy()
+			actual := &corev1.Service{
+				ObjectMeta: svc.ObjectMeta,
+			}
+
+			svcPatch.Status = corev1.ServiceStatus{
+				LoadBalancer: corev1.LoadBalancerStatus{
+					Ingress: []corev1.LoadBalancerIngress{
+						{
+							IP: "3.3.3.3",
+						},
+					},
+				},
+			}
+
+			Expect(applicator.Apply(ctx, svcPatch)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
+			Expect(actual.Spec).To(BeComparableTo(expectedSvc.Spec))
+			Expect(actual.Status).To(BeComparableTo(expectedSvc.Status))
+		})
+
+		By("silently ignore status subresource but update spec on patches that update both the spec and status", func() {
+			// update svc to latest state
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), svc)).To(Succeed())
+			Expect(svc.Spec.Selector).To(BeComparableTo(map[string]string{"k1": "v1"}))
+			Expect(svc.Status).To(BeComparableTo(corev1.ServiceStatus{}))
+
+			// corev1.Service has a status subresource, so we must use ApplyStatus() to persist changes.
+			// Any status changes made by Apply() will be ignored by the k8s apiserver.
+			svcPatch := svc.DeepCopy()
+			expectedSvc := svc.DeepCopy()
+			actual := &corev1.Service{
+				ObjectMeta: svc.ObjectMeta,
+			}
+
+			svcPatch.Spec.Selector = map[string]string{"k1": "v2"}
+			svcPatch.Status = corev1.ServiceStatus{
+				LoadBalancer: corev1.LoadBalancerStatus{
+					Ingress: []corev1.LoadBalancerIngress{
+						{
+							IP: "3.3.3.3",
+						},
+					},
+				},
+			}
+			// the spec updates will take, but the status ones will be ignored due to status subresource
+			expectedSvc.Spec.Selector = map[string]string{"k1": "v2"}
+
+			Expect(applicator.Apply(ctx, svcPatch)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
+			Expect(actual.Spec).To(BeComparableTo(expectedSvc.Spec))
+			Expect(actual.Status).To(BeComparableTo(expectedSvc.Status))
+		})
+
+		By("creates a test resource without a status subresource", func() {
+			Expect(errors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(testResourceNoSubresource), testResourceNoSubresource)))
+
+			actual := &v1alpha1.TestResourceWithoutSubresource{
+				ObjectMeta: testResourceNoSubresource.ObjectMeta,
+			}
+			Expect(applicator.Apply(ctx, testResourceNoSubresource.DeepCopy())).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
+			// ignore object meta since UID, ResourceVersion, ManagedFields, etc. will differ
+			Expect(actual).To(BeComparableTo(testResourceNoSubresource, cmpopts.IgnoreFields(v1alpha1.TestResourceWithoutSubresource{}, "ObjectMeta")))
+		})
+
+		By("patching spec+status when it's not a subresource", func() {
+			// update testResourceNoSubresource to latest state
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(testResourceNoSubresource), testResourceNoSubresource)).To(Succeed())
+			Expect(testResourceNoSubresource.Spec).To(BeComparableTo(v1alpha1.TestResourceWithoutSubresourceSpec{
+				TestField: "test",
+			}))
+			Expect(testResourceNoSubresource.Status).To(BeComparableTo(v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "",
+			}))
+
+			testResourceNoSubresourcePatch := testResourceNoSubresource.DeepCopy()
+			testResourceNoSubresourcePatch.Spec = v1alpha1.TestResourceWithoutSubresourceSpec{
+				TestField: "test-patched-spec-and-status",
+			}
+			testResourceNoSubresourcePatch.Status = v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "test-patched-spec-and-status",
+			}
+
+			actual := &v1alpha1.TestResourceWithoutSubresource{
+				ObjectMeta: testResourceNoSubresource.ObjectMeta,
+			}
+			Expect(applicator.Apply(ctx, testResourceNoSubresourcePatch.DeepCopy())).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
+			// ignore object meta since UID, ResourceVersion, ManagedFields, etc. will differ
+			Expect(actual).To(BeComparableTo(testResourceNoSubresourcePatch, cmpopts.IgnoreFields(v1alpha1.TestResourceWithoutSubresource{}, "ObjectMeta")))
+		})
+
+		By("updating spec+status when it's not a subresource", func() {
+			// update testResourceNoSubresource to latest state
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(testResourceNoSubresource), testResourceNoSubresource)).To(Succeed())
+			Expect(testResourceNoSubresource.Spec).To(BeComparableTo(v1alpha1.TestResourceWithoutSubresourceSpec{
+				TestField: "test-patched-spec-and-status",
+			}))
+			Expect(testResourceNoSubresource.Status).To(BeComparableTo(v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "test-patched-spec-and-status",
+			}))
+
+			testResourceNoSubresourceUpdate := testResourceNoSubresource.DeepCopy()
+			testResourceNoSubresourceUpdate.Spec = v1alpha1.TestResourceWithoutSubresourceSpec{
+				TestField: "test-updated-spec-and-status",
+			}
+			testResourceNoSubresourceUpdate.Status = v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "test-updated-spec-and-status",
+			}
+
+			actual := &v1alpha1.TestResourceWithoutSubresource{
+				ObjectMeta: testResourceNoSubresource.ObjectMeta,
+			}
+			Expect(applicator.Apply(ctx, testResourceNoSubresourceUpdate.DeepCopy(), io.AsUpdate())).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
+			// ignore object meta since UID, ResourceVersion, ManagedFields, etc. will differ
+			Expect(actual).To(BeComparableTo(testResourceNoSubresourceUpdate, cmpopts.IgnoreFields(v1alpha1.TestResourceWithoutSubresource{}, "ObjectMeta")))
+		})
+
+		By("patching status when it's not a subresource", func() {
+			// update testResourceNoSubresource to latest state
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(testResourceNoSubresource), testResourceNoSubresource)).To(Succeed())
+			Expect(testResourceNoSubresource.Status).To(BeComparableTo(v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "test-updated-spec-and-status",
+			}))
+
+			testResourceNoSubresourcePatch := testResourceNoSubresource.DeepCopy()
+			testResourceNoSubresourcePatch.Status = v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "test-status-patched",
+			}
+
+			actual := &v1alpha1.TestResourceWithoutSubresource{
+				ObjectMeta: testResourceNoSubresource.ObjectMeta,
+			}
+			Expect(applicator.Apply(ctx, testResourceNoSubresourcePatch.DeepCopy())).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
+			// ignore object meta since UID, ResourceVersion, ManagedFields, etc. will differ
+			Expect(actual).To(BeComparableTo(testResourceNoSubresourcePatch, cmpopts.IgnoreFields(v1alpha1.TestResourceWithoutSubresource{}, "ObjectMeta")))
+		})
+
+		By("updating status when it's not a subresource", func() {
+			// update testResourceNoSubresource to latest state
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(testResourceNoSubresource), testResourceNoSubresource)).To(Succeed())
+			Expect(testResourceNoSubresource.Status).To(BeComparableTo(v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "test-status-patched",
+			}))
+
+			testResourceNoSubresourceUpdate := testResourceNoSubresource.DeepCopy()
+			testResourceNoSubresourceUpdate.Status = v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "test-status-updated",
+			}
+
+			actual := &v1alpha1.TestResourceWithoutSubresource{
+				ObjectMeta: testResourceNoSubresource.ObjectMeta,
+			}
+			Expect(applicator.Apply(ctx, testResourceNoSubresourceUpdate.DeepCopy(), io.AsUpdate())).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
+			// ignore object meta since UID, ResourceVersion, ManagedFields, etc. will differ
+			Expect(actual).To(BeComparableTo(testResourceNoSubresourceUpdate, cmpopts.IgnoreFields(v1alpha1.TestResourceWithoutSubresource{}, "ObjectMeta")))
 		})
 	})
 
@@ -230,98 +413,6 @@ var _ = Describe("Applicator", func() {
 			}).Should(Succeed())
 		})
 
-		By("allowing status-only patches to CRDs without a status subresource", func() {
-
-			// TestFoo has a status subresource, so we must use ApplyStatus() to persist changes.
-			// Any status changes made by Apply() will be ignored by the k8s apiserver.
-			foo := &v1alpha1.TestFoo{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "foo-patch",
-					Namespace: "default",
-				},
-				Spec: v1alpha1.TestFooSpec{
-					TestField: "test",
-				},
-				Status: v1alpha1.TestFooStatus{},
-			}
-
-			// TestBar has no status subresource, so we use Apply() instead of ApplyStatus()
-			bar := &v1alpha1.TestBar{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "bar-patch",
-					Namespace: "default",
-				},
-				Spec: v1alpha1.TestBarSpec{
-					TestField: "test",
-				},
-				Status: v1alpha1.TestBarStatus{},
-			}
-
-			Expect(applicator.Apply(ctx, foo)).To(Succeed())
-			foo.Status.TestField = "test"
-			Expect(applicator.Apply(ctx, foo)).To(Succeed())
-			actualFoo := &v1alpha1.TestFoo{}
-			Expect(c.Get(ctx, client.ObjectKeyFromObject(foo), actualFoo)).To(Succeed())
-			Expect(actualFoo.Status).To(BeComparableTo(v1alpha1.TestFooStatus{
-				TestField: "", // applicator Apply() doesn't set status if status subresource exists on the CRD
-			}))
-
-			Expect(applicator.Apply(ctx, bar)).To(Succeed())
-			bar.Status.TestField = "test"
-			Expect(applicator.Apply(ctx, bar)).To(Succeed())
-			actualBar := &v1alpha1.TestBar{}
-			Expect(c.Get(ctx, client.ObjectKeyFromObject(bar), actualBar)).To(Succeed())
-			Expect(actualBar.Status).To(BeComparableTo(v1alpha1.TestBarStatus{
-				TestField: "test",
-			}))
-		})
-
-		By("allowing status-only updates to CRDs without a status subresource", func() {
-
-			// TestFoo has a status subresource, so we must use ApplyStatus() to persist changes.
-			// Any status changes made by Apply() will be ignored by the k8s apiserver.
-			foo := &v1alpha1.TestFoo{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "foo-update",
-					Namespace: "default",
-				},
-				Spec: v1alpha1.TestFooSpec{
-					TestField: "test",
-				},
-				Status: v1alpha1.TestFooStatus{},
-			}
-
-			// TestBar has no status subresource, so we use Apply() instead of ApplyStatus()
-			bar := &v1alpha1.TestBar{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "bar-update",
-					Namespace: "default",
-				},
-				Spec: v1alpha1.TestBarSpec{
-					TestField: "test",
-				},
-				Status: v1alpha1.TestBarStatus{},
-			}
-
-			Expect(applicator.Apply(ctx, foo, io.AsUpdate())).To(Succeed())
-			foo.Status.TestField = "test"
-			Expect(applicator.Apply(ctx, foo, io.AsUpdate())).To(Succeed())
-			actualFoo := &v1alpha1.TestFoo{}
-			Expect(c.Get(ctx, client.ObjectKeyFromObject(foo), actualFoo)).To(Succeed())
-			Expect(actualFoo.Status).To(BeComparableTo(v1alpha1.TestFooStatus{
-				TestField: "", // applicator Apply() doesn't set status if status subresource exists on the CRD
-			}))
-
-			Expect(applicator.Apply(ctx, bar, io.AsUpdate())).To(Succeed())
-			bar.Status.TestField = "test"
-			Expect(applicator.Apply(ctx, bar, io.AsUpdate())).To(Succeed())
-			actualBar := &v1alpha1.TestBar{}
-			Expect(c.Get(ctx, client.ObjectKeyFromObject(bar), actualBar)).To(Succeed())
-			Expect(actualBar.Status).To(BeComparableTo(v1alpha1.TestBarStatus{
-				TestField: "test",
-			}))
-		})
-
 		By("specifying no owner refs", func() {
 			Expect(applicator.Apply(ctx, svc, io.WithoutOwnerRefs())).To(Succeed())
 
@@ -398,6 +489,20 @@ var _ = Describe("Applicator", func() {
 				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
 				g.Expect(actual.Status).To(Equal(expectedSvc.Status))
 			}).Should(Succeed())
+		})
+
+		By("failing to update status if it's not a subresource", func() {
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(testResourceNoSubresource), testResourceNoSubresource)).To(Succeed())
+			Expect(testResourceNoSubresource.Status).To(BeComparableTo(v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "test-status-updated",
+			}))
+
+			testResourceNoSubresourcePatch := testResourceNoSubresource.DeepCopy()
+			testResourceNoSubresourcePatch.Status = v1alpha1.TestResourceWithoutSubresourceStatus{
+				TestField: "test-update-will-fail",
+			}
+
+			Expect(errors.IsNotFound(applicator.ApplyStatus(ctx, testResourceNoSubresourcePatch.DeepCopy())))
 		})
 	})
 })

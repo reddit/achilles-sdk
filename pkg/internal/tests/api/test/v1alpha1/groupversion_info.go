@@ -39,15 +39,9 @@ var (
 	TestClaimedKindAPIVersion   = TestClaimedKind + "." + GroupVersion.String()
 	TestClaimedGroupVersionKind = GroupVersion.WithKind(TestClaimedKind)
 
-	// TestFoo type metadata
-	TestFooKind             = reflect.TypeOf(TestFoo{}).Name()
-	TestFooGroupKind        = schema.GroupKind{Group: Group, Kind: TestFooKind}.String()
-	TestFooKindAPIVersion   = TestFooKind + "." + GroupVersion.String()
-	TestFooGroupVersionKind = GroupVersion.WithKind(TestFooKind)
-
-	// TestBar type metadata
-	TestBarKind             = reflect.TypeOf(TestBar{}).Name()
-	TestBarGroupKind        = schema.GroupKind{Group: Group, Kind: TestBarKind}.String()
-	TestBarKindAPIVersion   = TestBarKind + "." + GroupVersion.String()
-	TestBarGroupVersionKind = GroupVersion.WithKind(TestBarKind)
+	// TestResourceWithoutSubresource type metadata
+	TestResourceWithoutSubresourceKind             = reflect.TypeOf(TestResourceWithoutSubresource{}).Name()
+	TestResourceWithoutSubresourceGroupKind        = schema.GroupKind{Group: Group, Kind: TestResourceWithoutSubresourceKind}.String()
+	TestResourceWithoutSubresourceKindAPIVersion   = TestResourceWithoutSubresourceKind + "." + GroupVersion.String()
+	TestResourceWithoutSubresourceGroupVersionKind = GroupVersion.WithKind(TestResourceWithoutSubresourceKind)
 )

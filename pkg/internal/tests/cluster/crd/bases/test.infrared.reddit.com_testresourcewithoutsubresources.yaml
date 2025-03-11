@@ -4,24 +4,24 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.0
-  name: testfoos.test.infrared.reddit.com
+  name: testresourcewithoutsubresources.test.infrared.reddit.com
 spec:
   group: test.infrared.reddit.com
   names:
     categories:
     - test
     - infrared
-    kind: TestFoo
-    listKind: TestFooList
-    plural: testfoos
-    singular: testfoo
+    kind: TestResourceWithoutSubresource
+    listKind: TestResourceWithoutSubresourceList
+    plural: testresourcewithoutsubresources
+    singular: testresourcewithoutsubresource
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: TestFoo is a simple test resource; notably, it properly subresources
-          the status field, unlike TestBar.
+        description: TestResourceWithoutSubresource is a simple test resource; notably,
+          it does not subresource the status field.
         properties:
           apiVersion:
             description: |-
@@ -46,7 +46,8 @@ spec:
                 type: string
             type: object
           status:
-            description: TestFooStatus describes the status of a TestFoo.
+            description: TestResourceWithoutSubresourceStatus describes the status
+              of a TestResourceWithoutSubresource.
             properties:
               conditions:
                 description: Conditions of the resource.
@@ -131,5 +132,3 @@ spec:
         type: object
     served: true
     storage: true
-    subresources:
-      status: {}

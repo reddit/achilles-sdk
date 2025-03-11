@@ -42,18 +42,10 @@ var _ = Describe("ResourceGetter", func() {
 			{
 				Group:      v1alpha1.GroupVersion.Group,
 				Version:    v1alpha1.GroupVersion.Version,
-				Kind:       v1alpha1.TestFooKind,
-				Resource:   "testfoos",
-				Object:     &v1alpha1.TestFoo{},
-				ObjectList: &v1alpha1.TestFooList{},
-			},
-			{
-				Group:      v1alpha1.GroupVersion.Group,
-				Version:    v1alpha1.GroupVersion.Version,
-				Kind:       v1alpha1.TestBarKind,
-				Resource:   "testbars",
-				Object:     &v1alpha1.TestBar{},
-				ObjectList: &v1alpha1.TestBarList{},
+				Kind:       v1alpha1.TestResourceWithoutSubresourceKind,
+				Resource:   "testresourcewithoutsubresources",
+				Object:     &v1alpha1.TestResourceWithoutSubresource{},
+				ObjectList: &v1alpha1.TestResourceWithoutSubresourceList{},
 			},
 		}))
 	})
