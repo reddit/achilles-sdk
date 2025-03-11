@@ -38,4 +38,10 @@ var (
 	TestClaimedGroupKind        = schema.GroupKind{Group: Group, Kind: TestClaimedKind}.String()
 	TestClaimedKindAPIVersion   = TestClaimedKind + "." + GroupVersion.String()
 	TestClaimedGroupVersionKind = GroupVersion.WithKind(TestClaimedKind)
+
+	// TestResourceWithoutSubresource type metadata
+	TestResourceWithoutSubresourceKind             = reflect.TypeOf(TestResourceWithoutSubresource{}).Name()
+	TestResourceWithoutSubresourceGroupKind        = schema.GroupKind{Group: Group, Kind: TestResourceWithoutSubresourceKind}.String()
+	TestResourceWithoutSubresourceKindAPIVersion   = TestResourceWithoutSubresourceKind + "." + GroupVersion.String()
+	TestResourceWithoutSubresourceGroupVersionKind = GroupVersion.WithKind(TestResourceWithoutSubresourceKind)
 )

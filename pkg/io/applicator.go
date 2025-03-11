@@ -120,8 +120,22 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	if err != nil {
 		return fmt.Errorf("converting desired obj to unstructured: %w", err)
 	}
-	unstructured.RemoveNestedField(before, "status")
-	unstructured.RemoveNestedField(after, "status")
+
+	// https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#subresources
+	hasStatusSubresource := false
+	for _, managedFields := range current.GetManagedFields() {
+		// we're doing a client-side apply, so we assume we own all fields even if the manager is not our own.
+		// in other words, no need to ensure that managedFields.Manager == a.managerName
+		// TODO: we should explore using server-side apply
+		if managedFields.Subresource == "status" {
+			hasStatusSubresource = true
+			break
+		}
+	}
+	if hasStatusSubresource {
+		unstructured.RemoveNestedField(before, "status")
+		unstructured.RemoveNestedField(after, "status")
+	}
 
 	if reflect.DeepEqual(before, after) {
 		return nil

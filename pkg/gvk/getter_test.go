@@ -39,6 +39,14 @@ var _ = Describe("ResourceGetter", func() {
 				Object:     &v1alpha1.TestClaimed{},
 				ObjectList: &v1alpha1.TestClaimedList{},
 			},
+			{
+				Group:      v1alpha1.GroupVersion.Group,
+				Version:    v1alpha1.GroupVersion.Version,
+				Kind:       v1alpha1.TestResourceWithoutSubresourceKind,
+				Resource:   "testresourcewithoutsubresources",
+				Object:     &v1alpha1.TestResourceWithoutSubresource{},
+				ObjectList: &v1alpha1.TestResourceWithoutSubresourceList{},
+			},
 		}))
 	})
 
