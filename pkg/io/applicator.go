@@ -1,7 +1,6 @@
 package io
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
 
 	"github.com/reddit/achilles-sdk/pkg/encoding/json"
 	liberrors "github.com/reddit/achilles-sdk/pkg/errors"
@@ -123,30 +121,15 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		return fmt.Errorf("converting desired obj to unstructured: %w", err)
 	}
 
-	// remove the status if it's a subresource
-	statusFieldPath, err := fieldpath.MakePath("status")
-	if err != nil {
-		return fmt.Errorf("error creating field path: %w", err)
-	}
+	// https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#subresources
 	hasStatusSubresource := false
 	for _, managedFields := range current.GetManagedFields() {
 		// we're doing a client-side apply, so we assume we own all fields even if the manager is not our own.
 		// in other words, no need to ensure that managedFields.Manager == a.managerName
 		// TODO: we should explore using server-side apply
-		if managedFields.Subresource == "" {
-			// if the field is managed by root, then it's not a status subresource
-			continue
-		}
-		var fieldPaths fieldpath.Set
-		if managedFields.FieldsType != "FieldsV1" {
-			return fmt.Errorf("unsupported fields type %v", managedFields.FieldsType)
-		}
-		err := fieldPaths.FromJSON(bytes.NewReader(managedFields.FieldsV1.Raw))
-		if err != nil {
-			return fmt.Errorf("error parsing managedFields for %v: %w", m, err)
-		}
-		if fieldPaths.Has(statusFieldPath) {
+		if managedFields.Subresource == "status" {
 			hasStatusSubresource = true
+			break
 		}
 	}
 	if hasStatusSubresource {
