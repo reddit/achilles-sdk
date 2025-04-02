@@ -61,6 +61,9 @@ type Options struct {
 	// This is a global setting that applies to all controllers. Defaults to 10 hours.
 	// Issue tracking sync periods per controller: https://github.com/reddit/achilles-sdk/issues/171
 	SyncPeriod time.Duration
+
+	// LeaderElection determines whether the controller should use leader election (a form of active-passive HA).
+	LeaderElection bool
 }
 
 func (o *Options) AddToFlags(flags *pflag.FlagSet) {
@@ -121,7 +124,12 @@ func Start(
 	return nil
 }
 
-func buildManager(cfg *rest.Config, log *zap.SugaredLogger, schemes runtime.SchemeBuilder, opts *Options) (manager.Manager, error) {
+func buildManager(
+	cfg *rest.Config,
+	log *zap.SugaredLogger,
+	schemes runtime.SchemeBuilder,
+	opts *Options,
+) (manager.Manager, error) {
 	mgr, err := manager.New(
 		cfg,
 		manager.Options{
@@ -131,6 +139,7 @@ func buildManager(cfg *rest.Config, log *zap.SugaredLogger, schemes runtime.Sche
 			Cache: cache.Options{
 				SyncPeriod: &opts.SyncPeriod,
 			},
+			LeaderElection: opts.LeaderElection,
 		},
 	)
 	if err != nil {
