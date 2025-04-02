@@ -2,6 +2,8 @@ module github.com/reddit/achilles-sdk
 
 go 1.23.0
 
+toolchain go1.24.1
+
 require (
 	github.com/fgrosse/zaptest v1.2.1
 	github.com/go-logr/zapr v1.3.0
@@ -20,9 +22,9 @@ require (
 	golang.org/x/sync v0.10.0
 	golang.org/x/time v0.9.0
 	golang.org/x/tools v0.29.0
-	k8s.io/api v0.32.0
+	k8s.io/api v0.32.3
 	k8s.io/apiextensions-apiserver v0.32.0
-	k8s.io/apimachinery v0.32.0
+	k8s.io/apimachinery v0.32.3
 	k8s.io/client-go v0.32.0
 	k8s.io/utils v0.0.0-20241210054802-24370beab758
 	sigs.k8s.io/controller-runtime v0.20.1
