@@ -30,7 +30,7 @@ jobs:
         run: |
           # needed for running `tar -xJv` for installing shellcheck
           apt-get update
-          apt-get install xz-utils
+          apt-get install -y xz-utils
           
           make generate
           git status
