@@ -8,7 +8,7 @@ require (
 	github.com/fgrosse/zaptest v1.2.1
 	github.com/go-logr/zapr v1.3.0
 	github.com/gobuffalo/flect v1.0.3
-	github.com/google/go-cmp v0.6.0
+	github.com/google/go-cmp v0.7.0
 	github.com/iancoleman/strcase v0.3.0
 	github.com/onsi/ginkgo/v2 v2.23.3
 	github.com/onsi/gomega v1.36.2
