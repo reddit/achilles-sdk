@@ -77,6 +77,13 @@ func (s *OutputSet) Delete(o client.Object) {
 	s.deleted.Insert(o)
 }
 
+// DeleteAll is equivalent to calling Delete(obj) for all supplied objects.
+func (s *OutputSet) DeleteAll(objs ...client.Object) {
+	for _, o := range objs {
+		s.Delete(o)
+	}
+}
+
 // DeleteByRef is the same as Delete, but takes an api.TypedObjectRef instead of an object.
 func (s *OutputSet) DeleteByRef(typedObjRef api.TypedObjectRef) {
 	apiVersion, kind := typedObjRef.GroupVersionKind().ToAPIVersionAndKind()
