@@ -96,7 +96,7 @@ func (h *ObservedEventHandler) observedQueue(
 
 func (q *observedQueue) Add(item reconcile.Request) {
 	q.observeEvent(item)
-	q.TypedRateLimitingInterface.AddRateLimited(item)
+	q.TypedRateLimitingInterface.Add(item)
 }
 
 // logs an event trigger
