@@ -1,6 +1,21 @@
 package metrics
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"strconv"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+)
+
+// requestWithGeneration is a wrapper around reconcile.Request that adds a Generation field.
+type requestWithGeneration struct {
+	reconcile.Request
+	Generation int64
+}
+
+func (r requestWithGeneration) String() string {
+	return r.Request.String() + " Generation: " + strconv.FormatInt(r.Generation, 10)
+}
 
 // NOTE: the ordering of the []string return by `names()` and `values()` _must_ match
 

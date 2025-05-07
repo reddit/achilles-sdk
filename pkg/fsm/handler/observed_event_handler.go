@@ -35,6 +35,7 @@ type observedQueue struct {
 	workqueue.TypedRateLimitingInterface[reconcile.Request]
 	handler    *ObservedEventHandler
 	eventType  string
+	trigger    client.Object
 	triggerRef types.NamespacedName
 	triggerGVK schema.GroupVersionKind
 }
@@ -80,27 +81,32 @@ func (h *ObservedEventHandler) Generic(ctx context.Context, evt event.GenericEve
 
 func (h *ObservedEventHandler) observedQueue(
 	eventType string,
-	trigger client.Object,
+	o client.Object,
 	q workqueue.TypedRateLimitingInterface[reconcile.Request],
 ) *observedQueue {
-	// trigger client.Object
 	return &observedQueue{
 		TypedRateLimitingInterface: q,
 		handler:                    h,
 		eventType:                  eventType,
-		// ref to the object being reconciled (which may differ from the triggering object for owner ref based triggers)
-		triggerRef: client.ObjectKeyFromObject(trigger),
-		triggerGVK: libmeta.MustGVKForObject(trigger, h.scheme),
+		// trigger refers to the object that is triggering the reconciler (which differs from the object being reconciled if ObservedEventHandler.triggerType != TriggerTypeSelf)
+		trigger:    o,
+		triggerRef: client.ObjectKeyFromObject(o),
+		triggerGVK: libmeta.MustGVKForObject(o, h.scheme),
 	}
 }
 
 func (q *observedQueue) Add(item reconcile.Request) {
-	q.observeEvent(item)
+	q.observeEventTrigger(item)
+
+	// NOTE: we don't need to mark processing start time for AddRateLimited() or AddAfter() because this metric
+	// measures duration from a create or update to the object being reconciled, which will always result in a call to Add()
+	q.markProcessingStartTime(q.trigger)
+
 	q.TypedRateLimitingInterface.Add(item)
 }
 
 // logs an event trigger
-func (q *observedQueue) observeEvent(req reconcile.Request) {
+func (q *observedQueue) observeEventTrigger(req reconcile.Request) {
 	triggerGVK := q.triggerGVK
 	triggerType := q.handler.triggerType.String()
 
@@ -124,4 +130,20 @@ func (q *observedQueue) observeEvent(req reconcile.Request) {
 		With(fieldNameRequestName, req.Name).
 		With(fieldNameRequestNamespace, req.Namespace).
 		Debug(triggerMessage)
+}
+
+func (q *observedQueue) markProcessingStartTime(o client.Object) {
+	// the processing duration metric only applies to "self" triggers
+	// (triggers resulting from creates or updates on the object being reconciled)
+	if q.handler.triggerType != TriggerTypeSelf {
+		return
+	}
+
+	if err := q.handler.metrics.MarkProcessingStart(
+		q.triggerGVK,
+		reconcile.Request{NamespacedName: q.triggerRef},
+		o.GetGeneration(),
+	); err != nil {
+		q.handler.log.Errorf("failed to mark processing start time: %s", err)
+	}
 }

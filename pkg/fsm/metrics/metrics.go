@@ -1,12 +1,14 @@
 package metrics
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/reddit/achilles-sdk-api/api"
 	"github.com/reddit/achilles-sdk/pkg/fsm/types"
@@ -22,6 +24,9 @@ type Metrics struct {
 	scheme  *runtime.Scheme
 	sink    *Sink
 	options types.MetricsOptions
+
+	// a map of GVK to processingStartTimes
+	processingStartTimesByGVK map[schema.GroupVersionKind]*processingStartTimes
 }
 
 // MustMakeMetrics creates a new Metrics with a new metrics Sink, and the Metrics.Scheme set to that of the given manager.
@@ -44,6 +49,17 @@ func MustMakeMetricsWithOptions(scheme *runtime.Scheme, registrar prometheus.Reg
 		scheme:  scheme,
 		sink:    metricsRecorder,
 		options: options,
+	}
+}
+
+// InitializeForGVK initializes metrics for the given GVK.
+// NOTE: this is not thread-safe, but should only be called in synchronous code in application start up.
+func (m *Metrics) InitializeForGVK(gvk schema.GroupVersionKind) {
+	// initialize processingStartTimes for the given GVK
+	if _, ok := m.processingStartTimesByGVK[gvk]; !ok {
+		m.processingStartTimesByGVK[gvk] = &processingStartTimes{
+			processingStartTimes: make(map[requestWithGeneration]time.Time),
+		}
 	}
 }
 
@@ -144,11 +160,61 @@ func (m *Metrics) RecordSuspend(obj client.Object, suspend bool) {
 	m.sink.RecordSuspend(typedObjectRef.ObjectKey(), typedObjectRef.GroupVersionKind(), suspend)
 }
 
-// RecordProcessingDuration records the time taken to process an object of a given metadata.generation.
-func (m *Metrics) RecordProcessingDuration(gvk schema.GroupVersionKind, duration time.Duration, success bool) {
+func (m *Metrics) MarkProcessingStart(
+	gvk schema.GroupVersionKind,
+	req reconcile.Request,
+	gen int64,
+) error {
 	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesProcessingDuration) {
-		return
+		return nil
 	}
 
+	reqWithGen := requestWithGeneration{Request: req, Generation: gen}
+
+	// get the processing start time for the given GVK
+	processingStartTimes, ok := m.processingStartTimesByGVK[gvk]
+	if !ok {
+		return fmt.Errorf("no processing start time found for GVK %s, missing a call to metrics.InitializeForGVK()", gvk.String())
+	}
+
+	processingStartTimes.setIfEarliest(reqWithGen, time.Now())
+
+	return nil
+}
+
+// RecordProcessingDuration records the time taken to process an object of a given metadata.generation.
+func (m *Metrics) RecordProcessingDuration(
+	gvk schema.GroupVersionKind,
+	req reconcile.Request,
+	gen int64,
+	success bool,
+) error {
+	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesProcessingDuration) {
+		return nil
+	}
+
+	reqWithGen := requestWithGeneration{Request: req, Generation: gen}
+
+	// get the processing start time for the given GVK
+	processingStartTimes, ok := m.processingStartTimesByGVK[gvk]
+	if !ok {
+		return fmt.Errorf("no processing start time found for GVK %s, missing a call to metrics.InitializeForGVK()", gvk.String())
+	}
+
+	// get the processing start time for the given request
+	startTime := processingStartTimes.get(reqWithGen)
+	if startTime.IsZero() {
+		// zero start time means the data point was deleted after a successful reconciliation for that generation
+		return nil
+	}
+
+	// clear the start time if success to prevent unbounded memory growth
+	// after successful processing, there shouldn't be any subsequent failed reconciliation for the given generation
+	if success {
+		processingStartTimes.delete(reqWithGen)
+	}
+
+	duration := time.Since(startTime)
 	m.sink.RecordProcessingDuration(gvk, duration, success)
+	return nil
 }
