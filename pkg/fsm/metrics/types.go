@@ -137,3 +137,28 @@ func (c suspendGaugeLabel) values() []string {
 		c.namespace,
 	}
 }
+
+type processingDurationHistogramLabel struct {
+	group   string
+	version string
+	kind    string
+	success string
+}
+
+func (c processingDurationHistogramLabel) names() []string {
+	return []string{
+		"group",
+		"version",
+		"kind",
+		"success",
+	}
+}
+
+func (c processingDurationHistogramLabel) values() []string {
+	return []string{
+		c.group,
+		c.version,
+		c.kind,
+		c.success,
+	}
+}

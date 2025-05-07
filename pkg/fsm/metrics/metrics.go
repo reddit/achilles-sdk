@@ -143,3 +143,12 @@ func (m *Metrics) RecordSuspend(obj client.Object, suspend bool) {
 	typedObjectRef := meta.MustTypedObjectRefFromObject(obj, m.scheme)
 	m.sink.RecordSuspend(typedObjectRef.ObjectKey(), typedObjectRef.GroupVersionKind(), suspend)
 }
+
+// RecordProcessingDuration records the time taken to process an object of a given metadata.generation.
+func (m *Metrics) RecordProcessingDuration(gvk schema.GroupVersionKind, duration time.Duration, success bool) {
+	if m.sink == nil || m.options.IsMetricDisabled(types.AchillesProcessingDuration) {
+		return
+	}
+
+	m.sink.RecordProcessingDuration(gvk, duration, success)
+}

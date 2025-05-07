@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,10 +20,11 @@ const (
 
 // Sink is a prometheus metrics sink for standard achilles metrics.
 type Sink struct {
-	readinessGauge         *prometheus.GaugeVec
-	triggerCounter         *prometheus.CounterVec
-	stateDurationHistogram *prometheus.HistogramVec
-	suspendGauge           *prometheus.GaugeVec
+	readinessGauge              *prometheus.GaugeVec
+	triggerCounter              *prometheus.CounterVec
+	stateDurationHistogram      *prometheus.HistogramVec
+	suspendGauge                *prometheus.GaugeVec
+	processingDurationHistogram *prometheus.HistogramVec
 }
 
 // NewSink returns a new achilles metrics Sink.
@@ -56,6 +58,14 @@ func NewSink() *Sink {
 				Help: "Gauge reporting whether the object is suspended or not",
 			},
 			suspendGaugeLabel{}.names(),
+		),
+		processingDurationHistogram: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "achilles_processing_duration_seconds",
+				Buckets: []float64{0.5, 0.90, 0.99},
+				Help:    "Histogram of the time taken to process an object spec update",
+			},
+			processingDurationHistogramLabel{}.names(),
 		),
 	}
 }
@@ -225,4 +235,21 @@ func (r *Sink) RecordSuspend(
 			namespace: ref.Namespace,
 		}.values()...,
 	).Set(value)
+}
+
+// RecordProcessingDuration records the time taken to process an object of a given metadata.generation.
+func (r *Sink) RecordProcessingDuration(
+	gvk schema.GroupVersionKind,
+	duration time.Duration,
+	success bool,
+) {
+
+	r.processingDurationHistogram.WithLabelValues(
+		processingDurationHistogramLabel{
+			group:   gvk.Group,
+			version: gvk.Version,
+			kind:    gvk.Kind,
+			success: strconv.FormatBool(success),
+		}.values()...,
+	).Observe(duration.Seconds())
 }
