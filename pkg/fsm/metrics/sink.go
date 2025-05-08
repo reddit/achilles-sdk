@@ -76,6 +76,7 @@ func (r *Sink) Reset() {
 	r.triggerCounter.Reset()
 	r.stateDurationHistogram.Reset()
 	r.suspendGauge.Reset()
+	r.processingDurationHistogram.Reset()
 }
 
 // Collectors returns a slice of Prometheus collectors, which can be used to register them in a metrics registry.
@@ -85,6 +86,7 @@ func (r *Sink) Collectors() []prometheus.Collector {
 		r.triggerCounter,
 		r.stateDurationHistogram,
 		r.suspendGauge,
+		r.processingDurationHistogram,
 	}
 }
 

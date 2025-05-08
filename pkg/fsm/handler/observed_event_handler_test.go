@@ -439,6 +439,11 @@ func assertExpectedLogMessages(
 	expected []expectedLog,
 	actualLogs *observer.ObservedLogs,
 ) {
+	// filter out logs that are not relevant to the test
+	actualLogs = actualLogs.Filter(func(entry observer.LoggedEntry) bool {
+		return strings.Contains(entry.Message, "received trigger")
+	})
+
 	if len(expected) != actualLogs.Len() {
 		t.Errorf("unexpected number of log messages, got=%d want=%d", actualLogs.Len(), len(expected))
 		return

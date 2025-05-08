@@ -3,9 +3,12 @@ package handler
 import (
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/reddit/achilles-sdk/pkg/fsm/metrics"
 	libmeta "github.com/reddit/achilles-sdk/pkg/meta"
@@ -62,24 +65,35 @@ func (p *ForObservePredicate) Generic(e event.GenericEvent) bool {
 // logs an event trigger
 func (p *ForObservePredicate) observeEvent(
 	eventType string,
-	trigger client.Object,
+	o client.Object,
 ) {
-	requestRef := client.ObjectKeyFromObject(trigger)
-	triggerGVK := libmeta.MustGVKForObject(trigger, p.scheme)
+	ref := client.ObjectKeyFromObject(o)
+	gvk := libmeta.MustGVKForObject(o, p.scheme)
 	triggerType := TriggerTypeSelf.String()
 
 	// record trigger metric
 	p.metrics.RecordTrigger(
-		triggerGVK,
-		requestRef,
+		gvk,
+		ref,
 		eventType,
 		triggerType,
 		p.controllerName,
 	)
 
+	if eventType == "create" || eventType == "update" {
+		// record processing metric start time
+		p.markProcessingStartTime(ref, o.GetGeneration(), gvk)
+	}
+
 	p.log.
-		With(fieldNameRequestObjKey, requestRef.String()).
+		With(fieldNameRequestObjKey, ref.String()).
 		With(fieldNameEvent, eventType).
 		With(fieldNameTriggerType, triggerType).
 		Debug(triggerMessage)
+}
+
+func (p *ForObservePredicate) markProcessingStartTime(ref types.NamespacedName, gen int64, gvk schema.GroupVersionKind) {
+	if err := p.metrics.MarkProcessingStart(gvk, reconcile.Request{NamespacedName: ref}, gen); err != nil {
+		p.log.Errorf("failed to mark processing start time: %s", err)
+	}
 }
