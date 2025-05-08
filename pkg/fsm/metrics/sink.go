@@ -62,7 +62,7 @@ func NewSink() *Sink {
 		processingDurationHistogram: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "achilles_processing_duration_seconds",
-				Buckets: []float64{0.5, 0.90, 0.99},
+				Buckets: prometheus.ExponentialBucketsRange(0.01, 15, 4),
 				Help:    "Histogram of the time taken to process an object spec update",
 			},
 			processingDurationHistogramLabel{}.names(),
