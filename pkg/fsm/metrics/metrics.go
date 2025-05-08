@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/reddit/achilles-sdk-api/api"
+	"github.com/reddit/achilles-sdk/pkg/fsm/metrics/internal"
 	"github.com/reddit/achilles-sdk/pkg/fsm/types"
 	"github.com/reddit/achilles-sdk/pkg/meta"
 )
@@ -20,13 +21,23 @@ type conditionedObject interface {
 	client.Object
 }
 
+type processingStartTimes interface {
+	// GetRange returns the processing start times for all requests with name, namespace, and generation <= observedGeneration.
+	GetRange(name string, namespace string, observedGeneration int64) []time.Time
+	// SetIfEarliest sets the processing start time for the given request if it is earlier than the current one.
+	// Items with the same key can be queued multiple times, but we care about the first time that a request was encountered.
+	SetIfEarliest(name string, namespace string, observedGeneration int64, startTime time.Time)
+	// DeleteRange deletes all processing start times for the given (name, namespace) where generation <= observedGeneration.
+	DeleteRange(name string, namespace string, observedGeneration int64)
+}
+
 type Metrics struct {
 	scheme  *runtime.Scheme
 	sink    *Sink
 	options types.MetricsOptions
 
 	// a map of GVK to processingStartTimes
-	processingStartTimesByGVK map[schema.GroupVersionKind]*processingStartTimes
+	processingStartTimesByGVK map[schema.GroupVersionKind]processingStartTimes
 }
 
 // MustMakeMetrics creates a new Metrics with a new metrics Sink, and the Metrics.Scheme set to that of the given manager.
@@ -35,8 +46,9 @@ func MustMakeMetrics(scheme *runtime.Scheme, registrar prometheus.Registerer) *M
 	registrar.MustRegister(metricsRecorder.Collectors()...)
 
 	return &Metrics{
-		scheme: scheme,
-		sink:   metricsRecorder,
+		scheme:                    scheme,
+		sink:                      metricsRecorder,
+		processingStartTimesByGVK: make(map[schema.GroupVersionKind]processingStartTimes),
 	}
 }
 
@@ -46,9 +58,10 @@ func MustMakeMetricsWithOptions(scheme *runtime.Scheme, registrar prometheus.Reg
 	registrar.MustRegister(metricsRecorder.Collectors()...)
 
 	return &Metrics{
-		scheme:  scheme,
-		sink:    metricsRecorder,
-		options: options,
+		scheme:                    scheme,
+		sink:                      metricsRecorder,
+		options:                   options,
+		processingStartTimesByGVK: make(map[schema.GroupVersionKind]processingStartTimes),
 	}
 }
 
@@ -57,9 +70,7 @@ func MustMakeMetricsWithOptions(scheme *runtime.Scheme, registrar prometheus.Reg
 func (m *Metrics) InitializeForGVK(gvk schema.GroupVersionKind) {
 	// initialize processingStartTimes for the given GVK
 	if _, ok := m.processingStartTimesByGVK[gvk]; !ok {
-		m.processingStartTimesByGVK[gvk] = &processingStartTimes{
-			processingStartTimes: make(map[requestWithGeneration]time.Time),
-		}
+		m.processingStartTimesByGVK[gvk] = internal.NewProcessingStartTimes()
 	}
 }
 
@@ -169,15 +180,14 @@ func (m *Metrics) MarkProcessingStart(
 		return nil
 	}
 
-	reqWithGen := requestWithGeneration{Request: req, Generation: gen}
-
 	// get the processing start time for the given GVK
+	// NOTE: this does not need to be guarded by a mutex because it's guaranteed to only receive concurrent reads
 	processingStartTimes, ok := m.processingStartTimesByGVK[gvk]
 	if !ok {
 		return fmt.Errorf("no processing start time found for GVK %s, missing a call to metrics.InitializeForGVK()", gvk.String())
 	}
 
-	processingStartTimes.setIfEarliest(reqWithGen, time.Now())
+	processingStartTimes.SetIfEarliest(req.Name, req.Namespace, gen, time.Now())
 
 	return nil
 }
@@ -193,8 +203,6 @@ func (m *Metrics) RecordProcessingDuration(
 		return nil
 	}
 
-	reqWithGen := requestWithGeneration{Request: req, Generation: gen}
-
 	// get the processing start time for the given GVK
 	processingStartTimes, ok := m.processingStartTimesByGVK[gvk]
 	if !ok {
@@ -202,19 +210,18 @@ func (m *Metrics) RecordProcessingDuration(
 	}
 
 	// get the processing start time for the given request
-	startTime := processingStartTimes.get(reqWithGen)
-	if startTime.IsZero() {
-		// zero start time means the data point was deleted after a successful reconciliation for that generation
-		return nil
+	startTimes := processingStartTimes.GetRange(req.Name, req.Namespace, gen)
+
+	now := time.Now()
+	for _, startTime := range startTimes {
+		duration := now.Sub(startTime)
+		m.sink.RecordProcessingDuration(gvk, duration, success)
 	}
 
-	// clear the start time if success to prevent unbounded memory growth
-	// after successful processing, there shouldn't be any subsequent failed reconciliation for the given generation
+	// if the processing was successful, delete all matched items from the tree to prevent unbounded memory growth
 	if success {
-		processingStartTimes.delete(reqWithGen)
+		processingStartTimes.DeleteRange(req.Name, req.Namespace, gen)
 	}
 
-	duration := time.Since(startTime)
-	m.sink.RecordProcessingDuration(gvk, duration, success)
 	return nil
 }
