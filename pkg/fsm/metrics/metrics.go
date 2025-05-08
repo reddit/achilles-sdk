@@ -23,10 +23,12 @@ type conditionedObject interface {
 
 type processingStartTimes interface {
 	// GetRange returns the processing start times for all requests with name, namespace, and generation <= observedGeneration.
-	GetRange(name string, namespace string, observedGeneration int64) []time.Time
-	// SetIfEarliest sets the processing start time for the given request if it is earlier than the current one.
-	// Items with the same key can be queued multiple times, but we care about the first time that a request was encountered.
-	SetIfEarliest(name string, namespace string, observedGeneration int64, startTime time.Time)
+	GetRange(name string, namespace string, observedGeneration int64, success bool) []time.Time
+	// Set sets the processing start time for the given request and whether it failed.
+	Set(name string, namespace string, observedGeneration int64, startTime time.Time)
+	// SetRangeFailed sets the processing start time for the given request and marks it as failed.
+	// This is to avoid double counting the processing duration for failed requests.
+	SetRangeFailed(name string, namespace string, observedGeneration int64)
 	// DeleteRange deletes all processing start times for the given (name, namespace) where generation <= observedGeneration.
 	DeleteRange(name string, namespace string, observedGeneration int64)
 }
@@ -171,7 +173,9 @@ func (m *Metrics) RecordSuspend(obj client.Object, suspend bool) {
 	m.sink.RecordSuspend(typedObjectRef.ObjectKey(), typedObjectRef.GroupVersionKind(), suspend)
 }
 
-func (m *Metrics) MarkProcessingStart(
+// RecordProcessingStart records the start time of processing for the given GVK and request.
+// This doesn't record a metric, but the start time is used to calculate the processing duration later.
+func (m *Metrics) RecordProcessingStart(
 	gvk schema.GroupVersionKind,
 	req reconcile.Request,
 	gen int64,
@@ -187,7 +191,7 @@ func (m *Metrics) MarkProcessingStart(
 		return fmt.Errorf("no processing start time found for GVK %s, missing a call to metrics.InitializeForGVK()", gvk.String())
 	}
 
-	processingStartTimes.SetIfEarliest(req.Name, req.Namespace, gen, time.Now())
+	processingStartTimes.Set(req.Name, req.Namespace, gen, time.Now())
 
 	return nil
 }
@@ -210,7 +214,7 @@ func (m *Metrics) RecordProcessingDuration(
 	}
 
 	// get the processing start time for the given request
-	startTimes := processingStartTimes.GetRange(req.Name, req.Namespace, gen)
+	startTimes := processingStartTimes.GetRange(req.Name, req.Namespace, gen, success)
 
 	now := time.Now()
 	for _, startTime := range startTimes {
@@ -218,9 +222,12 @@ func (m *Metrics) RecordProcessingDuration(
 		m.sink.RecordProcessingDuration(gvk, duration, success)
 	}
 
-	// if the processing was successful, delete all matched items from the tree to prevent unbounded memory growth
 	if success {
+		// if the processing was successful, delete all matched items from the tree to prevent unbounded memory growth
 		processingStartTimes.DeleteRange(req.Name, req.Namespace, gen)
+	} else {
+		// if the processing failed, mark all items of (name, namespace) with generation < observedGeneration as failed to avoid subsequent double counting
+		processingStartTimes.SetRangeFailed(req.Name, req.Namespace, gen)
 	}
 
 	return nil
