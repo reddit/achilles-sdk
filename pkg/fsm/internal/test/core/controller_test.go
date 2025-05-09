@@ -349,9 +349,9 @@ var _ = Describe("Controller", Ordered, func() {
 
 	It("should collect built-in metrics", func() {
 		// create four label maps with different statuses and assert that readiness gauge value is as expected
-		rgTrueCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, string(metav1.ConditionTrue))
+		rgTrueCondLabels := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, string(metav1.ConditionTrue))
 		Eventually(func(g Gomega) {
-			metric, err := getMetric("achilles_resource_readiness", rgTrueCondLabelMap)
+			metric, err := getMetric("achilles_resource_readiness", rgTrueCondLabels)
 			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getGaugeMetricValue(metric)
@@ -360,9 +360,9 @@ var _ = Describe("Controller", Ordered, func() {
 			g.Expect(value).To(Equal(float64(1)))
 		}).Should(Succeed())
 
-		rgFalseCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, string(metav1.ConditionFalse))
+		rgFalseCondLabels := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, string(metav1.ConditionFalse))
 		Eventually(func(g Gomega) {
-			metric, err := getMetric("achilles_resource_readiness", rgFalseCondLabelMap)
+			metric, err := getMetric("achilles_resource_readiness", rgFalseCondLabels)
 			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getGaugeMetricValue(metric)
@@ -371,9 +371,9 @@ var _ = Describe("Controller", Ordered, func() {
 			g.Expect(value).To(Equal(float64(0)))
 		}).Should(Succeed())
 
-		rgUnknownCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, string(metav1.ConditionUnknown))
+		rgUnknownCondLabels := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, string(metav1.ConditionUnknown))
 		Eventually(func(g Gomega) {
-			metric, err := getMetric("achilles_resource_readiness", rgUnknownCondLabelMap)
+			metric, err := getMetric("achilles_resource_readiness", rgUnknownCondLabels)
 			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getGaugeMetricValue(metric)
@@ -382,9 +382,9 @@ var _ = Describe("Controller", Ordered, func() {
 			g.Expect(value).To(Equal(float64(0)))
 		}).Should(Succeed())
 
-		rgDeletedCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, "Deleted")
+		rgDeletedCondLabels := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, "Deleted")
 		Eventually(func(g Gomega) {
-			metric, err := getMetric("achilles_resource_readiness", rgDeletedCondLabelMap)
+			metric, err := getMetric("achilles_resource_readiness", rgDeletedCondLabels)
 			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getGaugeMetricValue(metric)
@@ -393,22 +393,21 @@ var _ = Describe("Controller", Ordered, func() {
 			g.Expect(value).To(Equal(float64(0)))
 		}).Should(Succeed())
 
-		rgUnsupportedCondLabelMap := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, "Unsupported")
+		rgUnsupportedCondLabels := statusConditionLabels(client.ObjectKeyFromObject(testClaim), api.TypeReady, "Unsupported")
 		Eventually(func(g Gomega) {
-			_, err := getMetric("achilles_resource_readiness", rgUnsupportedCondLabelMap)
+			_, err := getMetric("achilles_resource_readiness", rgUnsupportedCondLabels)
 			g.Expect(err.Error()).To(ContainSubstring("metric does not exist with specified labels"))
 		}).Should(Succeed())
 
 		// create two label maps with different states and assert that state duration histogram value is non-zero
-		sdCmProvLabelMap := map[string]string{
-			"group":   testv1alpha1.Group,
-			"version": testv1alpha1.Version,
-			"kind":    testv1alpha1.TestClaimKind,
-			"state":   "config-map-provisioned",
-		}
 		Eventually(func(g Gomega) {
 			// if state is specified, duration histogram value should not be zero, as there is one metric per state in the test reconciler
-			metric, err := getMetric("achilles_state_duration_seconds", sdCmProvLabelMap)
+			metric, err := getMetric("achilles_state_duration_seconds", map[string]string{
+				"group":   testv1alpha1.Group,
+				"version": testv1alpha1.Version,
+				"kind":    testv1alpha1.TestClaimKind,
+				"state":   "config-map-provisioned",
+			})
 			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getHistogramMetricSampleCount(metric)
@@ -417,20 +416,49 @@ var _ = Describe("Controller", Ordered, func() {
 			g.Expect(value).ToNot(Equal(uint64(0)))
 		}).Should(Succeed())
 
-		sdInitialStateLabelMap := map[string]string{
-			"group":   testv1alpha1.Group,
-			"version": testv1alpha1.Version,
-			"kind":    testv1alpha1.TestClaimKind,
-			"state":   "initial-state",
-		}
 		Eventually(func(g Gomega) {
-			metric, err := getMetric("achilles_state_duration_seconds", sdInitialStateLabelMap)
+			metric, err := getMetric("achilles_state_duration_seconds", map[string]string{
+				"group":   testv1alpha1.Group,
+				"version": testv1alpha1.Version,
+				"kind":    testv1alpha1.TestClaimKind,
+				"state":   "initial-state",
+			})
 			g.Expect(err).ToNot(HaveOccurred())
 
 			value, err := getHistogramMetricSampleCount(metric)
 			g.Expect(err).ToNot(HaveOccurred())
 
 			g.Expect(value).ToNot(Equal(uint64(0)))
+		}).Should(Succeed())
+
+		By("collecting processing duration metrics for success")
+		Eventually(func(g Gomega) {
+			metric, err := getMetric("achilles_processing_duration_seconds", map[string]string{
+				"group":   testv1alpha1.Group,
+				"version": testv1alpha1.Version,
+				"kind":    testv1alpha1.TestClaimKind,
+				"success": "true",
+			})
+			g.Expect(err).ToNot(HaveOccurred())
+
+			value, err := getHistogramMetricSampleCount(metric)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(value).To(BeNumerically(">", uint64(0)))
+		}).Should(Succeed())
+
+		By("collecting processing duration metrics for failure")
+		Eventually(func(g Gomega) {
+			metric, err := getMetric("achilles_processing_duration_seconds", map[string]string{
+				"group":   testv1alpha1.Group,
+				"version": testv1alpha1.Version,
+				"kind":    testv1alpha1.TestClaimKind,
+				"success": "false",
+			})
+			g.Expect(err).ToNot(HaveOccurred())
+
+			value, err := getHistogramMetricSampleCount(metric)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(value).To(BeNumerically(">", uint64(0)))
 		}).Should(Succeed())
 	})
 

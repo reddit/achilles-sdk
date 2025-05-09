@@ -1,6 +1,8 @@
 package metrics
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 // NOTE: the ordering of the []string return by `names()` and `values()` _must_ match
 
@@ -135,5 +137,30 @@ func (c suspendGaugeLabel) values() []string {
 		c.kind,
 		c.name,
 		c.namespace,
+	}
+}
+
+type processingDurationHistogramLabel struct {
+	group   string
+	version string
+	kind    string
+	success string
+}
+
+func (c processingDurationHistogramLabel) names() []string {
+	return []string{
+		"group",
+		"version",
+		"kind",
+		"success",
+	}
+}
+
+func (c processingDurationHistogramLabel) values() []string {
+	return []string{
+		c.group,
+		c.version,
+		c.kind,
+		c.success,
 	}
 }
