@@ -112,7 +112,7 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 			success = true
 		}
 		if err := r.metrics.RecordProcessingDuration(meta.MustTypedObjectRefFromObject(obj, r.scheme).GroupVersionKind(), req, obj.GetGeneration(), success); err != nil {
-			log.Errorf("recording processing duration: %s", err)
+			log.Errorf("recording processing duration: %s", err.Error())
 		}
 
 		// record object readiness

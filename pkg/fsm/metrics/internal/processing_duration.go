@@ -9,7 +9,7 @@ import (
 )
 
 type ProcessingStartTimes struct {
-	m          sync.Mutex
+	m          sync.RWMutex
 	startTimes *btree.BTreeG[requestStartTime]
 }
 
@@ -44,8 +44,8 @@ func NewProcessingStartTimes() *ProcessingStartTimes {
 
 // GetRange returns the processing start times for all requests with name, namespace, and generation <= observedGeneration.
 func (p *ProcessingStartTimes) GetRange(name string, namespace string, observedGeneration int64, success bool) []time.Time {
-	p.m.Lock()
-	defer p.m.Unlock()
+	p.m.RLock()
+	defer p.m.RUnlock()
 
 	key := requestStartTime{
 		Namespace:  namespace,

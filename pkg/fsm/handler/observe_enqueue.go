@@ -94,6 +94,6 @@ func (p *ForObservePredicate) observeEvent(
 
 func (p *ForObservePredicate) markProcessingStartTime(ref types.NamespacedName, gen int64, gvk schema.GroupVersionKind) {
 	if err := p.metrics.RecordProcessingStart(gvk, reconcile.Request{NamespacedName: ref}, gen); err != nil {
-		p.log.Errorf("failed to mark processing start time: %s", err)
+		p.log.Errorf("failed to mark processing start time: %s", err.Error())
 	}
 }
