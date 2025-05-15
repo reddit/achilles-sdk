@@ -10,7 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/scheme"
+	kscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -176,19 +176,19 @@ var _ = Describe("Controller", Ordered, func() {
 					Name:      cmKey.Name,
 					Namespace: cmKey.Namespace,
 				},
-			}, scheme.Scheme),
+			}, kscheme.Scheme),
 			*meta.MustTypedObjectRefFromObject(&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      finalizerConfigMapNames[0],
 					Namespace: cmKey.Namespace,
 				},
-			}, scheme.Scheme),
+			}, kscheme.Scheme),
 			*meta.MustTypedObjectRefFromObject(&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      finalizerConfigMapNames[1],
 					Namespace: cmKey.Namespace,
 				},
-			}, scheme.Scheme),
+			}, kscheme.Scheme),
 		}
 		Eventually(func(g Gomega) {
 			actualClaim := &testv1alpha1.TestClaim{}
@@ -217,7 +217,7 @@ var _ = Describe("Controller", Ordered, func() {
 							Namespace: "default",
 						},
 					},
-					scheme.Scheme),
+					kscheme.Scheme),
 			)
 			return nil
 		})
@@ -230,19 +230,19 @@ var _ = Describe("Controller", Ordered, func() {
 					Name:      *testClaim.Spec.ConfigMapName,
 					Namespace: testClaim.Namespace,
 				},
-			}, scheme.Scheme),
+			}, kscheme.Scheme),
 			*meta.MustTypedObjectRefFromObject(&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      finalizerConfigMapNames[0],
 					Namespace: "default",
 				},
-			}, scheme.Scheme),
+			}, kscheme.Scheme),
 			*meta.MustTypedObjectRefFromObject(&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      finalizerConfigMapNames[1],
 					Namespace: "default",
 				},
-			}, scheme.Scheme),
+			}, kscheme.Scheme),
 		}
 		Eventually(func(g Gomega) {
 			actualClaim := &testv1alpha1.TestClaim{}
@@ -483,13 +483,13 @@ var _ = Describe("Controller", Ordered, func() {
 					Name:      finalizerConfigMapNames[0],
 					Namespace: "default",
 				},
-			}, scheme.Scheme),
+			}, kscheme.Scheme),
 			*meta.MustTypedObjectRefFromObject(&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      finalizerConfigMapNames[1],
 					Namespace: "default",
 				},
-			}, scheme.Scheme),
+			}, kscheme.Scheme),
 		}
 
 		Eventually(func(g Gomega) {
@@ -525,13 +525,13 @@ var _ = Describe("Controller", Ordered, func() {
 						Name:      finalizerConfigMapNames[0],
 						Namespace: "default",
 					},
-				}, scheme.Scheme),
+				}, kscheme.Scheme),
 				*meta.MustTypedObjectRefFromObject(&corev1.ConfigMap{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      finalizerConfigMapNames[1],
 						Namespace: "default",
 					},
-				}, scheme.Scheme),
+				}, kscheme.Scheme),
 			}
 			Eventually(func(g Gomega) {
 				actualClaim := &testv1alpha1.TestClaim{}
@@ -605,7 +605,7 @@ var _ = Describe("Controller", Ordered, func() {
 						Name:      "finalizer-child-2",
 						Namespace: "default",
 					},
-				}, scheme.Scheme),
+				}, kscheme.Scheme),
 			}
 			Eventually(func(g Gomega) {
 				actualClaim := &testv1alpha1.TestClaim{}

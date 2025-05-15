@@ -48,6 +48,7 @@ func SetupController(
 	c *io.ClientApplicator,
 	metrics *metrics.Metrics,
 	disableAutoCreate *atomic.Bool,
+	capturedReconciler *reconcile.Reconciler,
 ) error {
 	r := &reconciler{
 		log:    log,
@@ -93,6 +94,8 @@ func SetupController(
 				},
 			},
 		).
+		WithSkipNameValidation().
+		WithCapturedReconciler(capturedReconciler).
 		Watches(&corev1.ConfigMap{},
 			// trigger auto creation of `test-create-func` TestClaim iff a ConfigMap of name `test-create-func` is created
 			ctrlhandler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
@@ -206,7 +209,73 @@ func (r *reconciler) provisionConfigMap(
 	}
 	out.ApplyAll(finalizerCM1, finalizerCM2)
 
-	return nil, fsmtypes.DoneResult()
+	return r.testResultTypes(), fsmtypes.DoneResult()
+}
+
+func (r *reconciler) testResultTypes() *state {
+	return &state{
+		Name: "custom-status-condition-state-name",
+		Condition: achapi.Condition{
+			Type:    "custom-status-condition",
+			Message: "default message",
+			Reason:  "default reason",
+		},
+		Transition: func(
+			ctx context.Context,
+			claim *testv1alpha1.TestClaim,
+			out *fsmtypes.OutputSet,
+		) (next *fsmtypes.State[*testv1alpha1.TestClaim], result fsmtypes.Result) {
+			if resultType, ok := claim.GetAnnotations()["result-type"]; ok {
+				switch resultType {
+				case "done":
+					return nil, fsmtypes.DoneResult()
+				case "done-with-status-condition":
+					return nil, fsmtypes.DoneResultWithStatusCondition(fsmtypes.ResultStatusCondition{
+						Status:  corev1.ConditionFalse,
+						Reason:  "Test custom reason",
+						Message: "Test custom message",
+					})
+				case "done-and-requeue":
+					return nil, fsmtypes.DoneAndRequeueResult("Done and requeue message", 5*time.Second)
+				case "requeue-with-backoff":
+					return nil, fsmtypes.RequeueResultWithBackoff("Requeue with backoff")
+				case "requeue-with-reason":
+					return nil, fsmtypes.RequeueResultWithReason("Requeue with reason", "RequeueWithReason", 5*time.Second)
+				case "requeue-with-reason-and-backoff":
+					return nil, fsmtypes.RequeueResultWithReasonAndBackoff("Requeue with reason and backoff", "RequeueWithReasonAndBackoff")
+				case "error":
+					return nil, fsmtypes.ErrorResult(fmt.Errorf("error result"))
+				case "error-with-reason":
+					return nil, fsmtypes.ErrorResultWithReason(fmt.Errorf("error result"), "ErrorReason")
+				case "requeue-after-completion-with-backoff":
+					return r.noopState(), fsmtypes.DoneAndRequeueAfterCompletionWithBackoff("Done and requeue after completion with backoff")
+				case "requeue-after-completion":
+					return r.noopState(), fsmtypes.DoneAndRequeueAfterCompletion("Done and requeue after completion", 30*time.Second)
+				}
+			}
+
+			return nil, fsmtypes.DoneResult()
+		},
+	}
+}
+
+// add a terminal noop state to exercise DoneAndRequeueAfterCompletion + DoneAndRequeueAfterCompletionWithBackoff
+func (r *reconciler) noopState() *state {
+	return &state{
+		Name: "terminal-noop-state",
+		Condition: achapi.Condition{
+			Type:    "noop-state",
+			Message: "default message",
+			Reason:  "default reason",
+		},
+		Transition: func(
+			ctx context.Context,
+			claim *testv1alpha1.TestClaim,
+			out *fsmtypes.OutputSet,
+		) (next *fsmtypes.State[*testv1alpha1.TestClaim], result fsmtypes.Result) {
+			return nil, fsmtypes.DoneResult()
+		},
+	}
 }
 
 func (r *reconciler) finalizerState() *state {

@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlbuilder "sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -63,6 +64,13 @@ type Builder[T any, Obj apitypes.FSMResource[T]] struct {
 	opts                    []buildOption
 	maxConcurrentReconciles int
 	reconcilerOptions       fsmtypes.ReconcilerOptions[T, Obj]
+
+	// skipNameValidation is used to skip name validation for the controller,
+	// should only be used for testing purposes.
+	skipNameValidation bool
+
+	// allows the caller to capture the underlying reconciler
+	capturedReconciler *reconcile.Reconciler
 }
 
 type managedType struct {
@@ -208,6 +216,20 @@ func (b *Builder[T, Obj]) WithEventFilter(
 	return b
 }
 
+// WithSkipNameValidation allows the caller to skip name validation for the controller.
+// This is useful for testing purposes.
+func (b *Builder[T, Obj]) WithSkipNameValidation() *Builder[T, Obj] {
+	b.skipNameValidation = true
+	return b
+}
+
+// WithCapturedReconciler allows the caller to capture the underlying reconcile.Reconciler.
+// This is useful for testing purposes.
+func (b *Builder[T, Obj]) WithCapturedReconciler(r *reconcile.Reconciler) *Builder[T, Obj] {
+	b.capturedReconciler = r
+	return b
+}
+
 func (b *Builder[T, Obj]) Build() SetupFunc {
 	return func(
 		mgr ctrl.Manager,
@@ -244,6 +266,7 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 
 		builder := ctrl.NewControllerManagedBy(mgr).
 			WithOptions(controller.Options{
+				SkipNameValidation:      ptr.To(b.skipNameValidation),
 				RateLimiter:             ratelimiter.NewDefaultManagedRateLimiter(rl),
 				MaxConcurrentReconciles: b.maxConcurrentReconciles,
 			}).
@@ -302,6 +325,11 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 		// controller functions
 		for _, fn := range b.controllerFns {
 			fn(con)
+		}
+
+		// capture the reconciler
+		if b.capturedReconciler != nil {
+			*b.capturedReconciler = con
 		}
 
 		return nil
