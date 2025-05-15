@@ -83,7 +83,7 @@ func NewFSMReconciler[T any, Obj apitypes.FSMResource[T]](
 	}
 }
 
-func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, err error) {
 	requestId := ctrlcontroller.ReconcileIDFromContext(ctx)
 	log := r.log.With("request", req, "requestId", requestId)
 	log.Debug("entering reconcile")
@@ -106,6 +106,16 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 			r.metrics.RecordCondition(obj, conditionType)
 		}
 
+		// record processing duration
+		var success bool
+		if res.IsZero() && err == nil {
+			success = true
+		}
+		if err := r.metrics.RecordProcessingDuration(meta.MustTypedObjectRefFromObject(obj, r.scheme).GroupVersionKind(), req, obj.GetGeneration(), success); err != nil {
+			log.Errorf("recording processing duration: %s", err.Error())
+		}
+
+		// record object readiness
 		r.metrics.RecordReadiness(obj)
 	}()
 

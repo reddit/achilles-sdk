@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,10 +20,11 @@ const (
 
 // Sink is a prometheus metrics sink for standard achilles metrics.
 type Sink struct {
-	readinessGauge         *prometheus.GaugeVec
-	triggerCounter         *prometheus.CounterVec
-	stateDurationHistogram *prometheus.HistogramVec
-	suspendGauge           *prometheus.GaugeVec
+	readinessGauge              *prometheus.GaugeVec
+	triggerCounter              *prometheus.CounterVec
+	stateDurationHistogram      *prometheus.HistogramVec
+	suspendGauge                *prometheus.GaugeVec
+	processingDurationHistogram *prometheus.HistogramVec
 }
 
 // NewSink returns a new achilles metrics Sink.
@@ -57,6 +59,16 @@ func NewSink() *Sink {
 			},
 			suspendGaugeLabel{}.names(),
 		),
+		processingDurationHistogram: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name: "achilles_processing_duration_seconds",
+				// stay consistent with controller-runtime's reconciliation duration metric, https://github.com/kubernetes-sigs/controller-runtime/blob/9516c0f9a0aa83a499b5a25907899e4edb0dd9db/pkg/internal/controller/metrics/metrics.go#L61-L62
+				Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0,
+					1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 40, 50, 60},
+				Help: "Histogram of the time taken to process an object spec update from when the reconciler receives the event to reconciliation completion",
+			},
+			processingDurationHistogramLabel{}.names(),
+		),
 	}
 }
 
@@ -66,6 +78,7 @@ func (r *Sink) Reset() {
 	r.triggerCounter.Reset()
 	r.stateDurationHistogram.Reset()
 	r.suspendGauge.Reset()
+	r.processingDurationHistogram.Reset()
 }
 
 // Collectors returns a slice of Prometheus collectors, which can be used to register them in a metrics registry.
@@ -75,6 +88,7 @@ func (r *Sink) Collectors() []prometheus.Collector {
 		r.triggerCounter,
 		r.stateDurationHistogram,
 		r.suspendGauge,
+		r.processingDurationHistogram,
 	}
 }
 
@@ -225,4 +239,21 @@ func (r *Sink) RecordSuspend(
 			namespace: ref.Namespace,
 		}.values()...,
 	).Set(value)
+}
+
+// RecordProcessingDuration records the time taken to process an object of a given metadata.generation.
+func (r *Sink) RecordProcessingDuration(
+	gvk schema.GroupVersionKind,
+	duration time.Duration,
+	success bool,
+) {
+
+	r.processingDurationHistogram.WithLabelValues(
+		processingDurationHistogramLabel{
+			group:   gvk.Group,
+			version: gvk.Version,
+			kind:    gvk.Kind,
+			success: strconv.FormatBool(success),
+		}.values()...,
+	).Observe(duration.Seconds())
 }

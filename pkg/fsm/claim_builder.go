@@ -304,6 +304,9 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 			fn(claimedController)
 		}
 
+		metrics.InitializeForGVK(objGVK.GroupVersionKind())
+		metrics.InitializeForGVK(meta.MustGVKForObject(b.claim, scheme))
+
 		return nil
 	}
 }
