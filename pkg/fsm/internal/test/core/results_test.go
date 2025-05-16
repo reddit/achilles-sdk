@@ -78,6 +78,7 @@ func Test_DoneWithCustomStatusCondition(t *testing.T) {
 		expectedError          error
 		expectedStateCondition api.Condition
 		expectedReadyCondition api.Condition
+		expectedObjects        []client.Object
 	}{
 		{
 			name:           "done",
@@ -193,6 +194,13 @@ func Test_DoneWithCustomStatusCondition(t *testing.T) {
 				Reason:  status.ReasonFailure,
 				Message: "Non-successful conditions: custom-status-condition",
 			},
+			expectedObjects: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "noop-state-for-default-test-claim",
+					},
+				},
+			},
 		},
 		{
 			name:       "requeue after completion",
@@ -211,6 +219,13 @@ func Test_DoneWithCustomStatusCondition(t *testing.T) {
 				Status:  corev1.ConditionFalse,
 				Reason:  status.ReasonFailure,
 				Message: "Non-successful conditions: custom-status-condition",
+			},
+			expectedObjects: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "noop-state-for-default-test-claim",
+					},
+				},
 			},
 		},
 	}
@@ -254,6 +269,15 @@ func Test_DoneWithCustomStatusCondition(t *testing.T) {
 		// assert ready condition if expectation defined
 		if tc.expectedReadyCondition != (api.Condition{}) {
 			assertConditionExists(t, tc.name, testClaim, tc.expectedReadyCondition)
+		}
+
+		// assert expected objects if expectation defined
+		if len(tc.expectedObjects) > 0 {
+			for _, obj := range tc.expectedObjects {
+				if err := fakeC.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+					t.Errorf("getting expected object %q: %v", client.ObjectKeyFromObject(obj), err)
+				}
+			}
 		}
 	}
 }

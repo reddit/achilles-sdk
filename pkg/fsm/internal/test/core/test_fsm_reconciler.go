@@ -273,6 +273,14 @@ func (r *reconciler) noopState() *state {
 			claim *testv1alpha1.TestClaim,
 			out *fsmtypes.OutputSet,
 		) (next *fsmtypes.State[*testv1alpha1.TestClaim], result fsmtypes.Result) {
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: fmt.Sprintf("noop-state-for-%s-%s", claim.Namespace, claim.Name),
+				},
+			}
+			if err := r.c.Create(ctx, cm); err != nil {
+				return nil, fsmtypes.ErrorResult(fmt.Errorf("creating configmap: %w", err))
+			}
 			return nil, fsmtypes.DoneResult()
 		},
 	}

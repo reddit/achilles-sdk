@@ -255,10 +255,12 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 				// the last Result type with RequeueAfterCompletion==true takes precedence
 				result.RequeueAfterCompletionState = currentState.Name
 				requeueAfterCompletion = result
+				condition.Status = corev1.ConditionFalse
+				condition.Message, condition.Reason = result.GetMessageAndReason()
 			}
 
 			// mark the state's condition as failed if not done or the state signals a requeue after FSM completion
-			if !result.IsDone() || result.RequeueAfterCompletion {
+			if !result.IsDone() {
 				// falsify condition if provided, set message and reason
 				if !condition.IsEmpty() {
 					condition.Status = corev1.ConditionFalse
