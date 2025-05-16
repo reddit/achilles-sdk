@@ -79,7 +79,7 @@ var _ = BeforeSuite(func() {
 					Client:     mgr.GetClient(),
 					Applicator: io.NewAPIPatchingApplicator(mgr.GetClient()),
 				}
-				return SetupController(log, mgr, rl, clientApplicator, metrics, disableAutoCreate)
+				return SetupController(log, mgr, rl, clientApplicator, metrics, disableAutoCreate, nil)
 			},
 		).
 		Start()

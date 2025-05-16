@@ -65,11 +65,16 @@ func NewReadyCondition(observedGeneration int64, conditions ...api.Condition) ap
 }
 
 func NewUnreadyCondition(observedGeneration int64) api.Condition {
+	return NewUnreadyConditionWithMessage(observedGeneration, "")
+}
+
+func NewUnreadyConditionWithMessage(observedGeneration int64, message string) api.Condition {
 	return api.Condition{
 		Type:               api.TypeReady,
 		LastTransitionTime: metav1.Now(),
 		Status:             corev1.ConditionFalse,
 		ObservedGeneration: observedGeneration,
+		Message:            message,
 	}
 }
 
