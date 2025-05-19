@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/reddit/achilles-sdk-api/api"
@@ -25,11 +26,33 @@ const (
 // The state's corresponding status condition's status will be False if err or requeueAfter is populated,
 // and True if done is true. The status condition's message will be populated with the err or requeueMsg string.
 type Result struct {
-	Err          error
-	Reason       api.ConditionReason
-	RequeueMsg   string
+	// Done, if true and Err is nil, causes the FSM to progress to the next state. Else, the FSM will retry from the initial state.
+	Done bool
+	// Err, if not nil, causes the FSM to terminate and requeue with exponential backoff.
+	Err error
+	// Reason, if not empty, is the reason for a requeue. It will be used to set the status condition's reason.
+	Reason api.ConditionReason
+	// RequeueMsg, if not empty, triggers a requeue. It will be used to set the status condition's message if Done != true.
+	RequeueMsg string
+	// RequeueAfter, if not zero, is the duration to wait before requeuing.
 	RequeueAfter time.Duration
-	Done         bool
+
+	// RequeueAfterCompletion, if true, causes the FSM to requeue after all state transitions are completed, even if successful.
+	RequeueAfterCompletion bool
+
+	// RequeueAfterCompletionState is the state that caused the requeue after completion.
+	// This is managed by the underlying reconciler.
+	RequeueAfterCompletionState string
+
+	// CustomStatusCondition, if not nil and Done is true, is the status condition to set, regardless of the result type.
+	// This allows callers to customize the status condition message, status, and reason.
+	CustomStatusCondition *ResultStatusCondition
+}
+
+type ResultStatusCondition struct {
+	Status  corev1.ConditionStatus
+	Reason  api.ConditionReason
+	Message string
 }
 
 // Get resolves the Result into controller-runtime's reconcile.Result and error.
@@ -160,5 +183,41 @@ func DoneAndRequeueResult(msg string, requeueAfter time.Duration) Result {
 func DoneResult() Result {
 	return Result{
 		Done: true,
+	}
+}
+
+// DoneAndRequeueAfterCompletionWithBackoff returns a result that signals successful reconciliation of the current state,
+// and causes the FSM to requeue after all state transitions are completed, even if successful.
+// The object's status condition of type=Ready will be set to false.
+// The requeue after completion can be overriden by subsequent states returning results that cause an immediate requeue.
+// If multiple states return DoneAndRequeueAfterCompletion[WithBackoff], the last one takes precedence.
+// This is useful for cases where you want to continue executing subsequent states in the FSM but still want to requeue.
+func DoneAndRequeueAfterCompletionWithBackoff(msg string) Result {
+	return Result{
+		Done:                   true,
+		RequeueMsg:             msg,
+		RequeueAfterCompletion: true,
+	}
+}
+
+// DoneAndRequeueAfterCompletion functions the same as DoneAndRequeueAfterCompletionWithBackoff, but allows the caller
+// to specify a requeue duration instead of subjecting the requeue to exponential backoff.
+func DoneAndRequeueAfterCompletion(msg string, requeueAfter time.Duration) Result {
+	return Result{
+		Done:                   true,
+		RequeueMsg:             msg,
+		RequeueAfter:           requeueAfter,
+		RequeueAfterCompletion: true,
+	}
+}
+
+// DoneResultWithStatusCondition returns a result that progresses to the next FSM state and sets the current state's
+// status condition to customStatusCondition.
+// This is for cases where the caller wants to override default FSM status condition behavior by, for instance,
+// setting status to False and progressing to the next FSM state.
+func DoneResultWithStatusCondition(customStatusCondition ResultStatusCondition) Result {
+	return Result{
+		Done:                  true,
+		CustomStatusCondition: &customStatusCondition,
 	}
 }

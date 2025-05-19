@@ -24,6 +24,8 @@ func Test_OutputSet(t *testing.T) {
 	o2 := cm("cm2", "ns")
 	o2applyOpts := []io.ApplyOption{io.AsUpdate(), io.WithOptimisticLock()}
 	o3 := cm("cm3", "ns")
+	o4 := cm("cm4", "ns")
+	o5 := cm("cm4", "ns")
 
 	// case 1: add object without apply option
 	outputSet.Apply(o1)
@@ -60,6 +62,18 @@ func Test_OutputSet(t *testing.T) {
 	}
 	if outputSet.applied.Has(o3) {
 		t.Errorf("unexpected existence of o3 in applied set")
+	}
+
+	// case 4: exercise ApplyAll and DeleteAll
+	outputSet.ApplyAll(o4, o5)
+	expectedApplied := sets.NewObjectSet(scheme, o1, o2, o4, o5)
+	if !outputSet.applied.Equal(expectedApplied) {
+		t.Errorf("unexpected applied set after applying o4 and o5")
+	}
+	outputSet.DeleteAll(o4, o5)
+	expectedDeleted = sets.NewObjectSet(scheme, o3, o4, o5)
+	if !outputSet.deleted.Equal(expectedDeleted) {
+		t.Errorf("unexpected deleted set after deleting o4 and o5")
 	}
 }
 

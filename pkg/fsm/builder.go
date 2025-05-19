@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlbuilder "sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -55,7 +56,7 @@ type Builder[T any, Obj apitypes.FSMResource[T]] struct {
 	scheme                  *runtime.Scheme
 	initialState            *fsmtypes.State[Obj]
 	finalizerState          *fsmtypes.State[Obj]
-	managedTypes            []schema.GroupVersionKind
+	managedTypes            []managedType
 	controllerFns           []ControllerFunc
 	watches                 []watch
 	watchRemoteKinds        []watchRemoteKind
@@ -63,6 +64,15 @@ type Builder[T any, Obj apitypes.FSMResource[T]] struct {
 	opts                    []buildOption
 	maxConcurrentReconciles int
 	reconcilerOptions       fsmtypes.ReconcilerOptions[T, Obj]
+
+	// skipNameValidation is used to skip name validation for the controller,
+	// should only be used for testing purposes.
+	skipNameValidation bool
+}
+
+type managedType struct {
+	gvk        schema.GroupVersionKind
+	predicates ctrlbuilder.Predicates
 }
 
 type watch struct {
@@ -94,17 +104,33 @@ func NewBuilder[T any, Obj apitypes.FSMResource[T]](
 	}
 }
 
-// Manages adds a managed resource type to the controller.
+// Manages adds managed resource types to the controller.
 // All resource types that the controller manages must be included.
 func (b *Builder[T, Obj]) Manages(
 	gvks ...schema.GroupVersionKind,
 ) *Builder[T, Obj] {
 	for _, gvk := range gvks {
 		if b.scheme.Recognizes(gvk) {
-			b.managedTypes = append(b.managedTypes, gvk)
+			b.managedTypes = append(b.managedTypes, managedType{gvk: gvk})
 		} else {
 			panic(fmt.Sprintf("%s is not registered with runtime scheme", gvk))
 		}
+	}
+	return b
+}
+
+// ManagesWithPredicate adds a managed resource type to the controller with optional predicates.
+func (b *Builder[T, Obj]) ManagesWithPredicate(
+	gvk schema.GroupVersionKind,
+	predicates ...predicate.Predicate,
+) *Builder[T, Obj] {
+	if b.scheme.Recognizes(gvk) {
+		b.managedTypes = append(b.managedTypes, managedType{
+			gvk:        gvk,
+			predicates: ctrlbuilder.WithPredicates(predicates...),
+		})
+	} else {
+		panic(fmt.Sprintf("%s is not registered with runtime scheme", gvk))
 	}
 	return b
 }
@@ -187,6 +213,47 @@ func (b *Builder[T, Obj]) WithEventFilter(
 	return b
 }
 
+// WithSkipNameValidation allows the caller to skip name validation for the controller.
+// This is useful for testing purposes.
+func (b *Builder[T, Obj]) WithSkipNameValidation() *Builder[T, Obj] {
+	b.skipNameValidation = true
+	return b
+}
+
+// Reconciler returns a reconcile.Reconciler for the controller.
+func (b *Builder[T, Obj]) Reconciler(
+	log *zap.SugaredLogger,
+	scheme *runtime.Scheme,
+	c client.Client,
+	metrics *metrics.Metrics,
+) reconcile.TypedReconciler[ctrl.Request] {
+	objGVK := meta.MustTypedObjectRefFromObject(b.obj, scheme)
+	name := strcase.ToKebab(objGVK.Kind)
+	log = log.Named(name)
+
+	clientApplicator := &io.ClientApplicator{
+		Client:     c,
+		Applicator: io.NewAPIPatchingApplicator(c),
+	}
+
+	managedGVKs := make([]schema.GroupVersionKind, len(b.managedTypes))
+	for i, managedType := range b.managedTypes {
+		managedGVKs[i] = managedType.gvk
+	}
+
+	return internal.NewFSMReconciler(
+		name,
+		log,
+		clientApplicator,
+		scheme,
+		b.initialState,
+		b.finalizerState,
+		managedGVKs,
+		metrics,
+		b.reconcilerOptions,
+	)
+}
+
 func (b *Builder[T, Obj]) Build() SetupFunc {
 	return func(
 		mgr ctrl.Manager,
@@ -204,20 +271,16 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			Applicator: io.NewAPIPatchingApplicator(mgr.GetClient()),
 		}
 
-		r := internal.NewFSMReconciler(
-			name,
-			log,
-			c,
-			scheme,
-			b.initialState,
-			b.finalizerState,
-			b.managedTypes,
-			metrics,
-			b.reconcilerOptions,
-		)
+		managedGVKs := make([]schema.GroupVersionKind, len(b.managedTypes))
+		for i, managedType := range b.managedTypes {
+			managedGVKs[i] = managedType.gvk
+		}
+
+		r := b.Reconciler(log, scheme, c, metrics)
 
 		builder := ctrl.NewControllerManagedBy(mgr).
 			WithOptions(controller.Options{
+				SkipNameValidation:      ptr.To(b.skipNameValidation),
 				RateLimiter:             ratelimiter.NewDefaultManagedRateLimiter(rl),
 				MaxConcurrentReconciles: b.maxConcurrentReconciles,
 			}).
@@ -225,15 +288,17 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			For(b.obj, ctrlbuilder.WithPredicates(fsmhandler.NewForObservePredicate(log, scheme, name, metrics)))
 
 		// watch managed types
-		for _, t := range b.managedTypes {
-			o, err := meta.NewObjectForGVK(scheme, t)
+		for _, managedType := range b.managedTypes {
+			gvk := managedType.gvk
+			o, err := meta.NewObjectForGVK(scheme, gvk)
 			if err != nil {
-				return fmt.Errorf("constructing new object of type %s: %s", t, err)
+				return fmt.Errorf("constructing new object of type %s: %s", gvk, err)
 			}
 			// equivalent to calling `builder.Owns` but uses an event handler that debug logs the event trigger
 			builder.Watches(
 				o,
 				fsmhandler.NewObservedEventHandler(log, scheme, name, metrics, handler.EnqueueRequestForOwner(scheme, mgr.GetRESTMapper(), b.obj, handler.OnlyControllerOwner()), fsmhandler.TriggerTypeChild),
+				managedType.predicates,
 			)
 		}
 
@@ -275,6 +340,8 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 		for _, fn := range b.controllerFns {
 			fn(con)
 		}
+
+		metrics.InitializeForGVK(objGVK.GroupVersionKind())
 
 		return nil
 	}
