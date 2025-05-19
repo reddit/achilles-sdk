@@ -304,6 +304,8 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			fn(con)
 		}
 
+		metrics.InitializeForGVK(objGVK.GroupVersionKind())
+
 		return nil
 	}
 }
