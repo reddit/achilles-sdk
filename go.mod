@@ -16,7 +16,7 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/client_model v0.6.1
 	github.com/reddit/achilles-sdk-api v1.1.1
-	github.com/spf13/pflag v1.0.6-0.20210604193023-d5e0c0615ace
+	github.com/spf13/pflag v1.0.6
 	github.com/stretchr/testify v1.10.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8
