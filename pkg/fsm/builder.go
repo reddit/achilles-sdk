@@ -332,6 +332,8 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			*b.capturedReconciler = con
 		}
 
+		metrics.InitializeForGVK(objGVK.GroupVersionKind())
+
 		return nil
 	}
 }
