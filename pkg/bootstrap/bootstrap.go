@@ -84,6 +84,8 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 	flags.IntVar(&o.ClientBurst, "client-burst", 10, "Maximum request/s burst to the kube-apiserver from the controller's client")
 
 	flags.DurationVar(&o.SyncPeriod, "sync-period", 10*time.Hour, "Minimum frequency at which all controllers will perform a reconciliation.")
+
+	flags.BoolVar(&o.LeaderElection, "leader-election", false, "Enables leader election for the controller (a form of active-passive HA)")
 }
 
 // StartFunc is a function for starting a controller manager

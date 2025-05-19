@@ -45,6 +45,8 @@ const (
 	AchillesStateDuration = "StateDuration"
 	// AchillesSuspend suspend reconciliation
 	AchillesSuspend = "ResourceSuspend"
+	// AchillesProcessingDuration
+	AchillesProcessingDuration = "ProcessingDuration"
 )
 
 // MetricsOptions are options for tuning the metrics instrumentation of this reconciler.

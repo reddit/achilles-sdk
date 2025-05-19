@@ -8,14 +8,15 @@ require (
 	github.com/fgrosse/zaptest v1.2.1
 	github.com/go-logr/zapr v1.3.0
 	github.com/gobuffalo/flect v1.0.3
+	github.com/google/btree v1.1.3
 	github.com/google/go-cmp v0.7.0
 	github.com/iancoleman/strcase v0.3.0
 	github.com/onsi/ginkgo/v2 v2.23.4
-	github.com/onsi/gomega v1.36.3
+	github.com/onsi/gomega v1.37.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/client_model v0.6.1
 	github.com/reddit/achilles-sdk-api v1.1.1
-	github.com/spf13/pflag v1.0.6-0.20210604193023-d5e0c0615ace
+	github.com/spf13/pflag v1.0.6
 	github.com/stretchr/testify v1.10.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8
@@ -47,7 +48,6 @@ require (
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/google/btree v1.1.3 // indirect
 	github.com/google/gnostic-models v0.6.8 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/google/pprof v0.0.0-20250403155104-27863c87afa6 // indirect
