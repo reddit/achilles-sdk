@@ -62,8 +62,22 @@ type Options struct {
 	// Issue tracking sync periods per controller: https://github.com/reddit/achilles-sdk/issues/171
 	SyncPeriod time.Duration
 
-	// LeaderElection determines whether the controller should use leader election (a form of active-passive HA).
+	// Determines whether the controller should use leader election (a form of active-passive HA).
 	LeaderElection bool
+
+	// LeaderElectionID determines the name of the resource (Lease) that leader election
+	// will use for holding the leader lock.
+	LeaderElectionID string
+
+	// LeaderElectionNamespace determines the namespace in which the leader
+	// election resource (Lease) will be created.
+	LeaderElectionNamespace string
+
+	// The renew deadline for this leader election controller.
+	// Must be set to ensure the resource lock has an appropriate client timeout.
+	// If set too low, a single slow response from the API server can result
+	// in losing leadership.
+	LeaderElectionRenewDeadline time.Duration
 }
 
 func (o *Options) AddToFlags(flags *pflag.FlagSet) {
@@ -86,6 +100,9 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 	flags.DurationVar(&o.SyncPeriod, "sync-period", 10*time.Hour, "Minimum frequency at which all controllers will perform a reconciliation.")
 
 	flags.BoolVar(&o.LeaderElection, "leader-election", false, "Enables leader election for the controller (a form of active-passive HA)")
+	flags.StringVar(&o.LeaderElectionID, "leader-election-id", "", "Name of the resource that leader election will use for holding the leader lock")
+	flags.StringVar(&o.LeaderElectionNamespace, "leader-election-namespace", "", "Namespace in which the leader election resource will be created")
+	flags.DurationVar(&o.LeaderElectionRenewDeadline, "renew-deadline", 15*time.Second, "Renew deadline for leader election controller. Must be set to ensure the resource lock has an appropriate client timeout. If set too low, a single slow response from the API server can result in losing leadership. Defaults to 15s")
 }
 
 // StartFunc is a function for starting a controller manager
@@ -141,7 +158,10 @@ func buildManager(
 			Cache: cache.Options{
 				SyncPeriod: &opts.SyncPeriod,
 			},
-			LeaderElection: opts.LeaderElection,
+			LeaderElection:          opts.LeaderElection,
+			LeaderElectionID:        opts.LeaderElectionID,
+			LeaderElectionNamespace: opts.LeaderElectionNamespace,
+			RenewDeadline:           &opts.LeaderElectionRenewDeadline,
 		},
 	)
 	if err != nil {
