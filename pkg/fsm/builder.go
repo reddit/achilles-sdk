@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlbuilder "sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -63,6 +64,10 @@ type Builder[T any, Obj apitypes.FSMResource[T]] struct {
 	opts                    []buildOption
 	maxConcurrentReconciles int
 	reconcilerOptions       fsmtypes.ReconcilerOptions[T, Obj]
+
+	// skipNameValidation is used to skip name validation for the controller,
+	// should only be used for testing purposes.
+	skipNameValidation bool
 }
 
 type managedType struct {
@@ -208,6 +213,47 @@ func (b *Builder[T, Obj]) WithEventFilter(
 	return b
 }
 
+// WithSkipNameValidation allows the caller to skip name validation for the controller.
+// This is useful for testing purposes.
+func (b *Builder[T, Obj]) WithSkipNameValidation() *Builder[T, Obj] {
+	b.skipNameValidation = true
+	return b
+}
+
+// Reconciler returns a reconcile.Reconciler for the controller.
+func (b *Builder[T, Obj]) Reconciler(
+	log *zap.SugaredLogger,
+	scheme *runtime.Scheme,
+	c client.Client,
+	metrics *metrics.Metrics,
+) reconcile.TypedReconciler[ctrl.Request] {
+	objGVK := meta.MustTypedObjectRefFromObject(b.obj, scheme)
+	name := strcase.ToKebab(objGVK.Kind)
+	log = log.Named(name)
+
+	clientApplicator := &io.ClientApplicator{
+		Client:     c,
+		Applicator: io.NewAPIPatchingApplicator(c),
+	}
+
+	managedGVKs := make([]schema.GroupVersionKind, len(b.managedTypes))
+	for i, managedType := range b.managedTypes {
+		managedGVKs[i] = managedType.gvk
+	}
+
+	return internal.NewFSMReconciler(
+		name,
+		log,
+		clientApplicator,
+		scheme,
+		b.initialState,
+		b.finalizerState,
+		managedGVKs,
+		metrics,
+		b.reconcilerOptions,
+	)
+}
+
 func (b *Builder[T, Obj]) Build() SetupFunc {
 	return func(
 		mgr ctrl.Manager,
@@ -230,20 +276,11 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			managedGVKs[i] = managedType.gvk
 		}
 
-		r := internal.NewFSMReconciler(
-			name,
-			log,
-			c,
-			scheme,
-			b.initialState,
-			b.finalizerState,
-			managedGVKs,
-			metrics,
-			b.reconcilerOptions,
-		)
+		r := b.Reconciler(log, scheme, c, metrics)
 
 		builder := ctrl.NewControllerManagedBy(mgr).
 			WithOptions(controller.Options{
+				SkipNameValidation:      ptr.To(b.skipNameValidation),
 				RateLimiter:             ratelimiter.NewDefaultManagedRateLimiter(rl),
 				MaxConcurrentReconciles: b.maxConcurrentReconciles,
 			}).

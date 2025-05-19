@@ -128,11 +128,8 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	if conditions != nil {
 		// set top level ready status condition
 		if !r.reconcilerOptions.DisableReadyCondition {
-			if result.IsDone() {
-				conditions.SetConditions(status.NewReadyCondition(obj.GetGeneration()))
-			} else {
-				conditions.SetConditions(status.NewUnreadyCondition(obj.GetGeneration()))
-			}
+			readyCondition := status.NewReadyCondition(obj.GetGeneration(), conditions.GetConditions()...)
+			conditions.SetConditions(readyCondition)
 		}
 
 		obj.SetConditions(conditions.GetConditions()...)
@@ -160,7 +157,7 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 // reconcile the object through a sequence of FSM states
-// return the mutated object, status conditions, and result
+// return the mutated object, status conditions (one per FSM state), and result
 func (r *fsmReconciler[T, Obj]) reconcile(
 	ctx context.Context,
 	req ctrl.Request,
@@ -233,6 +230,8 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 	// transition state
 	seenStates := sets.NewString()
 
+	var requeueAfterCompletion types.Result
+
 	for currentState != nil {
 		log.Debugw("entering state", "state", currentState.Name)
 		// record seen states to prevent loops
@@ -260,8 +259,17 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 			r.metrics.RecordStateDuration(typedObjectRef.GroupVersionKind(), currentState.Name, time.Since(start))
 
 			condition.LastTransitionTime = metav1.Now() // set status condition last transition time
-			condition.Status = corev1.ConditionTrue     // set status condition to true if state is done
+			condition.Status = corev1.ConditionTrue     // default status condition to true if state is done
 
+			if result.RequeueAfterCompletion {
+				// the last Result type with RequeueAfterCompletion==true takes precedence
+				result.RequeueAfterCompletionState = currentState.Name
+				requeueAfterCompletion = result
+				condition.Status = corev1.ConditionFalse
+				condition.Message, condition.Reason = result.GetMessageAndReason()
+			}
+
+			// mark the state's condition as failed if not done or the state signals a requeue after FSM completion
 			if !result.IsDone() {
 				// falsify condition if provided, set message and reason
 				if !condition.IsEmpty() {
@@ -270,6 +278,10 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 					conditions.SetConditions(condition)
 				}
 				return obj, conditions, result.WrapError(fmt.Sprintf("transitioning state %q", currentState.Name))
+			} else if result.CustomStatusCondition != nil {
+				condition.Status = result.CustomStatusCondition.Status
+				condition.Reason = result.CustomStatusCondition.Reason
+				condition.Message = result.CustomStatusCondition.Message
 			}
 		}
 
@@ -282,8 +294,8 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 			conditions.SetConditions(condition)
 		}
 
-		// for requeue results, requeue instead of proceeding to the following state
-		if result.HasRequeue() {
+		// for requeue results (excluding requeues after completion), requeue instead of proceeding to the following state
+		if result.HasRequeue() && !result.RequeueAfterCompletion {
 			return obj, conditions, result
 		}
 
@@ -291,7 +303,12 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 		currentState = next
 	}
 
-	return obj, conditions, types.DoneResult()
+	result := types.DoneResult()
+	if requeueAfterCompletion != (types.Result{}) {
+		result = requeueAfterCompletion
+	}
+
+	return obj, conditions, result
 }
 
 func (r *fsmReconciler[T, Obj]) applyOutputs(
