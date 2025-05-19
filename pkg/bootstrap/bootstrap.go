@@ -77,7 +77,12 @@ type Options struct {
 	// Must be set to ensure the resource lock has an appropriate client timeout.
 	// If set too low, a single slow response from the API server can result
 	// in losing leadership.
+	// Note: This must be set lower than the LeaderElectionLeaseDuration.
 	LeaderElectionRenewDeadline time.Duration
+
+	// The duration that non-leader candidates will  wait to force acquire leadership.
+	// This is measured against time of last observed ack. Default is 15 seconds.
+	LeaderElectionLeaseDuration time.Duration
 }
 
 func (o *Options) AddToFlags(flags *pflag.FlagSet) {
@@ -102,7 +107,8 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 	flags.BoolVar(&o.LeaderElection, "leader-election", false, "Enables leader election for the controller (a form of active-passive HA)")
 	flags.StringVar(&o.LeaderElectionID, "leader-election-id", "", "Name of the resource that leader election will use for holding the leader lock")
 	flags.StringVar(&o.LeaderElectionNamespace, "leader-election-namespace", "", "Namespace in which the leader election resource will be created")
-	flags.DurationVar(&o.LeaderElectionRenewDeadline, "renew-deadline", 15*time.Second, "Renew deadline for leader election controller. Must be set to ensure the resource lock has an appropriate client timeout. If set too low, a single slow response from the API server can result in losing leadership. Defaults to 15s")
+	flags.DurationVar(&o.LeaderElectionRenewDeadline, "renew-deadline", 10*time.Second, "Renew deadline for leader election controller. Must be set to ensure the resource lock has an appropriate client timeout. If set too low, a single slow response from the API server can result in losing leadership. Defaults to 10s")
+	flags.DurationVar(&o.LeaderElectionLeaseDuration, "lease-duration", 15*time.Second, "Duration that non-leader candidates will wait to force acquire leadership. This is measured against time of last observed ack. Default is 15 seconds.")
 }
 
 // StartFunc is a function for starting a controller manager
@@ -162,6 +168,7 @@ func buildManager(
 			LeaderElectionID:        opts.LeaderElectionID,
 			LeaderElectionNamespace: opts.LeaderElectionNamespace,
 			RenewDeadline:           &opts.LeaderElectionRenewDeadline,
+			LeaseDuration:           &opts.LeaderElectionLeaseDuration,
 		},
 	)
 	if err != nil {
