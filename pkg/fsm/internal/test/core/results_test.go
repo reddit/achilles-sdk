@@ -31,7 +31,6 @@ import (
 	internalscheme "github.com/reddit/achilles-sdk/pkg/internal/scheme"
 	testv1alpha1 "github.com/reddit/achilles-sdk/pkg/internal/tests/api/test/v1alpha1"
 	"github.com/reddit/achilles-sdk/pkg/io"
-	libratelimiter "github.com/reddit/achilles-sdk/pkg/ratelimiter"
 	"github.com/reddit/achilles-sdk/pkg/status"
 )
 
@@ -369,19 +368,11 @@ func initReconciler(log *zap.SugaredLogger, fakeC client.Client) (reconcile.Reco
 		Applicator: io.NewAPIPatchingApplicator(fakeC),
 	}
 
-	rl := libratelimiter.NewDefaultProviderRateLimiter(libratelimiter.DefaultProviderRPS)
-	var reconciler = new(reconcile.Reconciler)
-	if err = SetupController(
+	return BuildReconciler(
 		log,
 		mgr,
-		rl,
 		clientApplicator,
 		metrics.MustMakeMetrics(scheme, prometheus.NewRegistry()),
 		new(atomic.Bool),
-		reconciler,
-	); err != nil {
-		return nil, fmt.Errorf("setting up controller: %v", err)
-	}
-
-	return *reconciler, nil
+	), nil
 }

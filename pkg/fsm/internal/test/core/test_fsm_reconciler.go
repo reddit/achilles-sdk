@@ -41,15 +41,12 @@ const (
 	FinalizerStateConditionType = "FinalizerState"
 )
 
-func SetupController(
+func fsmBuilder(
 	log *zap.SugaredLogger,
 	mgr ctrl.Manager,
-	rl workqueue.TypedRateLimiter[reconcile.Request],
 	c *io.ClientApplicator,
-	metrics *metrics.Metrics,
 	disableAutoCreate *atomic.Bool,
-	capturedReconciler *reconcile.Reconciler,
-) error {
+) *fsm.Builder[testv1alpha1.TestClaim, *testv1alpha1.TestClaim] {
 	r := &reconciler{
 		log:    log,
 		c:      c,
@@ -95,7 +92,6 @@ func SetupController(
 			},
 		).
 		WithSkipNameValidation().
-		WithCapturedReconciler(capturedReconciler).
 		Watches(&corev1.ConfigMap{},
 			// trigger auto creation of `test-create-func` TestClaim iff a ConfigMap of name `test-create-func` is created
 			ctrlhandler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
@@ -106,7 +102,28 @@ func SetupController(
 			},
 			), handler.TriggerTypeRelative)
 
-	return builder.Build()(mgr, log, rl, metrics)
+	return builder
+}
+
+func BuildReconciler(
+	log *zap.SugaredLogger,
+	mgr ctrl.Manager,
+	c *io.ClientApplicator,
+	metrics *metrics.Metrics,
+	disableAutoCreate *atomic.Bool,
+) reconcile.TypedReconciler[ctrl.Request] {
+	return fsmBuilder(log, mgr, c, disableAutoCreate).Reconciler(log, mgr.GetScheme(), c, metrics)
+}
+
+func SetupController(
+	log *zap.SugaredLogger,
+	mgr ctrl.Manager,
+	rl workqueue.TypedRateLimiter[reconcile.Request],
+	c *io.ClientApplicator,
+	metrics *metrics.Metrics,
+	disableAutoCreate *atomic.Bool,
+) error {
+	return fsmBuilder(log, mgr, c, disableAutoCreate).Build()(mgr, log, rl, metrics)
 }
 
 func (r *reconciler) initialState() *state {

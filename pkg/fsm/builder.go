@@ -68,9 +68,6 @@ type Builder[T any, Obj apitypes.FSMResource[T]] struct {
 	// skipNameValidation is used to skip name validation for the controller,
 	// should only be used for testing purposes.
 	skipNameValidation bool
-
-	// allows the caller to capture the underlying reconciler
-	capturedReconciler *reconcile.Reconciler
 }
 
 type managedType struct {
@@ -223,11 +220,38 @@ func (b *Builder[T, Obj]) WithSkipNameValidation() *Builder[T, Obj] {
 	return b
 }
 
-// WithCapturedReconciler allows the caller to capture the underlying reconcile.Reconciler.
-// This is useful for testing purposes.
-func (b *Builder[T, Obj]) WithCapturedReconciler(r *reconcile.Reconciler) *Builder[T, Obj] {
-	b.capturedReconciler = r
-	return b
+// Reconciler returns a reconcile.Reconciler for the controller.
+func (b *Builder[T, Obj]) Reconciler(
+	log *zap.SugaredLogger,
+	scheme *runtime.Scheme,
+	c client.Client,
+	metrics *metrics.Metrics,
+) reconcile.TypedReconciler[ctrl.Request] {
+	objGVK := meta.MustTypedObjectRefFromObject(b.obj, scheme)
+	name := strcase.ToKebab(objGVK.Kind)
+	log = log.Named(name)
+
+	clientApplicator := &io.ClientApplicator{
+		Client:     c,
+		Applicator: io.NewAPIPatchingApplicator(c),
+	}
+
+	managedGVKs := make([]schema.GroupVersionKind, len(b.managedTypes))
+	for i, managedType := range b.managedTypes {
+		managedGVKs[i] = managedType.gvk
+	}
+
+	return internal.NewFSMReconciler(
+		name,
+		log,
+		clientApplicator,
+		scheme,
+		b.initialState,
+		b.finalizerState,
+		managedGVKs,
+		metrics,
+		b.reconcilerOptions,
+	)
 }
 
 func (b *Builder[T, Obj]) Build() SetupFunc {
@@ -252,17 +276,7 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			managedGVKs[i] = managedType.gvk
 		}
 
-		r := internal.NewFSMReconciler(
-			name,
-			log,
-			c,
-			scheme,
-			b.initialState,
-			b.finalizerState,
-			managedGVKs,
-			metrics,
-			b.reconcilerOptions,
-		)
+		r := b.Reconciler(log, scheme, c, metrics)
 
 		builder := ctrl.NewControllerManagedBy(mgr).
 			WithOptions(controller.Options{
@@ -325,11 +339,6 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 		// controller functions
 		for _, fn := range b.controllerFns {
 			fn(con)
-		}
-
-		// capture the reconciler
-		if b.capturedReconciler != nil {
-			*b.capturedReconciler = con
 		}
 
 		metrics.InitializeForGVK(objGVK.GroupVersionKind())
