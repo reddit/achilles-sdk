@@ -76,7 +76,7 @@ type Options struct {
 	// The renew deadline for this leader election controller.
 	// Must be set to ensure the resource lock has an appropriate client timeout.
 	// If set too low, a single slow response from the API server can result
-	// in losing leadership.
+	// in losing leadership. Defaults to 10 seconds.
 	// Note: This must be set lower than the LeaderElectionLeaseDuration.
 	LeaderElectionRenewDeadline time.Duration
 
