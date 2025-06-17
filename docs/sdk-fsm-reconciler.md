@@ -115,16 +115,20 @@ finalizer FSM terminates successfully.
 
 The FSM exposes the same trigger conditions as controller-runtime.
 
+**Parent Resource**
 When building a new controller,
-use `.Manages` ([source](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L93))
-to specify the type of object that is being managed by the controller. Each controller can only manage a single object
-type.
+the first argument to `fsm.NewBuilder` ([example](https://github.snooguts.net/reddit/redditscaler/blob/94e59f703df3731df0aac223c036884443b65f2a/internal/controllers/redditscaler/controller.go#L74))
+specifies the "parent" custom resource reconciled by the controller.
+Each controller can only reconcile a single parent resource.
+
+**Child Resources**
+Use the builder's `.Manages` method ([source](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L93))
+to specify the child resources that your controller outputs when implementing the parent API.
 
 The FSM automatically wires up triggers for all [managed resources](##Writing and Updating Managed Resources).
 
 Additional trigger conditions can be wired up for arbitrary events via
-the [`.Watches` method](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L134)
-.
+the [`.Watches` method](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/builder.go#L134).
 
 ## Example FSM Controllers
 
