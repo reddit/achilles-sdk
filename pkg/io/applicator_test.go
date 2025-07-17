@@ -505,4 +505,49 @@ var _ = Describe("Applicator", func() {
 			Expect(errors.IsNotFound(applicator.ApplyStatus(ctx, testResourceNoSubresourcePatch.DeepCopy())))
 		})
 	})
+
+	It("should create new objects with generated name without race conditions", func() {
+		By("creating the object with options applied", func() {
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test-generate-",
+					Namespace:    "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{{
+						Name:     "http",
+						Protocol: corev1.ProtocolTCP,
+						Port:     int32(8080),
+					}},
+				},
+			}
+
+			ownerObj := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+				Name:      "owner",
+				Namespace: "default",
+				UID:       "uid",
+			}}
+
+			Expect(applicator.Apply(
+				ctx,
+				svc,
+				io.WithRedditLabels("controller-name"),
+				io.WithControllerRef(ownerObj, scheme.Scheme),
+			)).To(Succeed())
+
+			// Verify the object's name was generated
+			Expect(svc.Name).To(HavePrefix("test-generate-"), "Service should have generated name")
+
+			// Verify the object exists in the cluster
+			actual := &corev1.Service{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), actual)).To(Succeed())
+
+			// Verify options were applied correctly
+			Expect(actual.Labels).To(Equal(meta.RedditLabels("controller-name")), "Service should have correct labels")
+			Expect(actual.OwnerReferences).To(HaveLen(1), "Service should have owner reference")
+			Expect(actual.OwnerReferences[0].Name).To(Equal("owner"), "Service should reference correct owner")
+			Expect(actual.OwnerReferences[0].Controller).ToNot(BeNil(), "Service should have controller reference")
+			Expect(*actual.OwnerReferences[0].Controller).To(BeTrue(), "Service should be controlled by owner")
+		})
+	})
 })
