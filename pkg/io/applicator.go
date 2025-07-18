@@ -78,28 +78,14 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	}
 
 	if m.GetName() == "" && m.GetGenerateName() != "" {
-		if err := a.client.Create(ctx, current); err != nil {
-			return fmt.Errorf("cannot create object: %w", err)
-		}
+		return a.createNewObject(ctx, current, requestOpts, opts)
 	}
 
 	desired := current.DeepCopyObject().(client.Object)
 
 	err := a.client.Get(ctx, types.NamespacedName{Name: m.GetName(), Namespace: m.GetNamespace()}, current)
 	if kerrors.IsNotFound(err) {
-		// apply options to current (for create)
-		if err := applyOpts(ctx, current, requestOpts, opts); liberrors.Ignore(func(err error) bool {
-			// ignore optimistic lock error when creating an object because resource version does not yet exist
-			return errors.Is(err, ResourceVersionMissing{})
-		}, err) != nil {
-			return err
-		}
-
-		if err := a.client.Create(ctx, current); err != nil {
-			return fmt.Errorf("cannot create object: %w", err)
-		}
-		// no need to patch if object was created
-		return nil
+		return a.createNewObject(ctx, current, requestOpts, opts)
 	} else if err != nil {
 		return fmt.Errorf("cannot get object: %w", err)
 	}
@@ -164,6 +150,22 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		}
 	}
 
+	return nil
+}
+
+// createNewObject handles creating a new object with options applied
+func (a *APIApplicator) createNewObject(ctx context.Context, obj client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {
+	// apply options to obj
+	if err := applyOpts(ctx, obj, requestOpts, opts); liberrors.Ignore(func(err error) bool {
+		// ignore optimistic lock error when creating an object because resource version does not yet exist
+		return errors.Is(err, ResourceVersionMissing{})
+	}, err) != nil {
+		return err
+	}
+
+	if err := a.client.Create(ctx, obj); err != nil {
+		return fmt.Errorf("cannot create object: %w", err)
+	}
 	return nil
 }
 
