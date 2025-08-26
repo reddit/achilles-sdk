@@ -24,7 +24,7 @@ require (
 	golang.org/x/time v0.12.0
 	golang.org/x/tools v0.35.0
 	k8s.io/api v0.33.4
-	k8s.io/apiextensions-apiserver v0.33.3
+	k8s.io/apiextensions-apiserver v0.33.4
 	k8s.io/apimachinery v0.33.4
 	k8s.io/client-go v0.33.4
 	k8s.io/utils v0.0.0-20241210054802-24370beab758
