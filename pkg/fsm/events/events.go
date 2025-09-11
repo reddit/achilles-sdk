@@ -17,12 +17,13 @@ type EventRecorder struct {
 	recorder record.EventRecorder
 }
 
-// NewEventRecorder creates a new EventRecorder for the given CRD name and manager.
-func NewEventRecorder(crdName string, manager ctrl.Manager) *EventRecorder {
-	return &EventRecorder{recorder: manager.GetEventRecorderFor(crdName)}
+// NewEventRecorder creates a new EventRecorder for the given controller and manager.
+func NewEventRecorder(controllerName string, manager ctrl.Manager) *EventRecorder {
+	return &EventRecorder{recorder: manager.GetEventRecorderFor(controllerName)}
 }
 
 // RecordReady records a ready event for the given object.
+// message is optional and defaults to "Object is ready".
 func (e *EventRecorder) RecordReady(obj client.Object, message string) {
 	if message == "" {
 		message = "Object is ready"
