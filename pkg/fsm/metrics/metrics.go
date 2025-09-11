@@ -251,12 +251,12 @@ func (m *Metrics) RecordEvent(
 
 // DeleteEvent deletes event metrics for the given triggered object and controller name.
 func (m *Metrics) DeleteEvent(
-	requestObjKey client.ObjectKey,
-	controllerName string,
+	obj client.Object,
 ) {
 	if m.sink == nil {
 		return
 	}
 
-	m.sink.DeleteEvent(requestObjKey, controllerName)
+	typedObjectRef := meta.MustTypedObjectRefFromObject(obj, m.scheme)
+	m.sink.DeleteEvent(typedObjectRef.ObjectKey(), typedObjectRef.GroupVersionKind())
 }

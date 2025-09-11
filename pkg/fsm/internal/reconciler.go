@@ -185,11 +185,11 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 
 		// deregister metrics for deleted objects (to keep metrics cardinality count from monotonically increasing over an application's lifetime)
 		r.metrics.DeleteTrigger(req.NamespacedName, r.name)
-		r.metrics.DeleteEvent(req.NamespacedName, r.name)
 
 		obj.SetName(req.Name)
 		obj.SetNamespace(req.Namespace)
 		r.metrics.DeleteReadiness(obj)
+		r.metrics.DeleteEvent(obj)
 
 		for _, conditionType := range r.reconcilerOptions.MetricsOptions.ConditionTypes {
 			r.metrics.DeleteCondition(obj, conditionType)

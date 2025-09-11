@@ -488,3 +488,36 @@ func Test_RecordProcessingDuration(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordEvent(t *testing.T) {
+	scheme := runtime.NewScheme()
+	metrics := MustMakeMetrics(scheme, prometheus.NewRegistry())
+
+	tests := []struct {
+		name       string
+		obj        client.Object
+		expected   int
+		metric     *Metrics
+		metricName string
+		collector  prometheus.Collector
+	}{
+		{
+			name:       "record event metric",
+			obj:        &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"}},
+			expected:   1,
+			metric:     metrics,
+			metricName: "achilles_event",
+			collector:  metrics.sink.eventCounter,
+		},
+	}
+
+	for _, tt := range tests {
+		runTest(t, tt.name, tt.expected, tt.metricName, tt.collector, func() {
+			tt.metric.RecordEvent(schema.GroupVersionKind{
+				Group:   "v1.Pod",
+				Version: "1.0",
+				Kind:    "v1/Pod",
+			}, "test-pod", "default", "Normal", "Ready", "test-controller")
+		})
+	}
+}

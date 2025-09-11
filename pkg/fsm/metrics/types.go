@@ -206,8 +206,10 @@ func (c eventCounterLabel) values() []string {
 // used for deleting event metrics for requested objects that no longer exist.
 func (c eventCounterLabel) partialValues() prometheus.Labels {
 	return prometheus.Labels{
+		"group":        c.group,
+		"version":      c.version,
+		"kind":         c.kind,
 		"objName":      c.objName,
 		"objNamespace": c.objNamespace,
-		"controller":   c.controller,
 	}
 }

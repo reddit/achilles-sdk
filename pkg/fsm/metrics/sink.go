@@ -292,17 +292,18 @@ func (r *Sink) RecordEvent(
 	).Inc()
 }
 
-// DeleteEvent deletes the event metric for the specified requested object and controller name,
-// and ALL triggering GVKs, event types, and trigger types.
+// DeleteEvent deletes the event metric for the specified requested object.
 func (r *Sink) DeleteEvent(
-	requestObjKey client.ObjectKey,
-	controllerName string,
+	ref client.ObjectKey,
+	gvk schema.GroupVersionKind,
 ) int {
 	return r.eventCounter.DeletePartialMatch(
 		eventCounterLabel{
-			objName:      requestObjKey.Name,
-			objNamespace: requestObjKey.Namespace,
-			controller:   controllerName,
+			group:        gvk.Group,
+			version:      gvk.Version,
+			kind:         gvk.Kind,
+			objName:      ref.Name,
+			objNamespace: ref.Namespace,
 		}.partialValues(),
 	)
 }
