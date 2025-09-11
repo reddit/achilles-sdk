@@ -25,6 +25,7 @@ type Sink struct {
 	stateDurationHistogram      *prometheus.HistogramVec
 	suspendGauge                *prometheus.GaugeVec
 	processingDurationHistogram *prometheus.HistogramVec
+	eventCounter                *prometheus.CounterVec
 }
 
 // NewSink returns a new achilles metrics Sink.
@@ -69,6 +70,13 @@ func NewSink() *Sink {
 			},
 			processingDurationHistogramLabel{}.names(),
 		),
+		eventCounter: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "achilles_event",
+				Help: "Total number of events per event type, reason, object.",
+			},
+			eventCounterLabel{}.names(),
+		),
 	}
 }
 
@@ -79,6 +87,7 @@ func (r *Sink) Reset() {
 	r.stateDurationHistogram.Reset()
 	r.suspendGauge.Reset()
 	r.processingDurationHistogram.Reset()
+	r.eventCounter.Reset()
 }
 
 // Collectors returns a slice of Prometheus collectors, which can be used to register them in a metrics registry.
@@ -89,6 +98,7 @@ func (r *Sink) Collectors() []prometheus.Collector {
 		r.stateDurationHistogram,
 		r.suspendGauge,
 		r.processingDurationHistogram,
+		r.eventCounter,
 	}
 }
 
@@ -256,4 +266,43 @@ func (r *Sink) RecordProcessingDuration(
 			success: strconv.FormatBool(success),
 		}.values()...,
 	).Observe(duration.Seconds())
+}
+
+// RecordEvent increments the counter for the given controller, qualified by the associated object GVK and object ref
+// and reconciled object ref.
+func (r *Sink) RecordEvent(
+	objectGVK schema.GroupVersionKind,
+	objectName string,
+	objectNamespace string,
+	eventType string,
+	reason string,
+	controllerName string,
+) {
+	r.eventCounter.WithLabelValues(
+		eventCounterLabel{
+			group:        objectGVK.Group,
+			version:      objectGVK.Version,
+			kind:         objectGVK.Kind,
+			objName:      objectName,
+			objNamespace: objectNamespace,
+			eventType:    eventType,
+			reason:       reason,
+			controller:   controllerName,
+		}.values()...,
+	).Inc()
+}
+
+// DeleteEvent deletes the event metric for the specified requested object and controller name,
+// and ALL triggering GVKs, event types, and trigger types.
+func (r *Sink) DeleteEvent(
+	requestObjKey client.ObjectKey,
+	controllerName string,
+) int {
+	return r.eventCounter.DeletePartialMatch(
+		eventCounterLabel{
+			objName:      requestObjKey.Name,
+			objNamespace: requestObjKey.Namespace,
+			controller:   controllerName,
+		}.partialValues(),
+	)
 }

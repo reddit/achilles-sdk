@@ -164,3 +164,50 @@ func (c processingDurationHistogramLabel) values() []string {
 		c.success,
 	}
 }
+
+type eventCounterLabel struct {
+	group        string
+	version      string
+	kind         string
+	objName      string
+	objNamespace string
+	eventType    string
+	reason       string
+	controller   string
+}
+
+func (c eventCounterLabel) names() []string {
+	return []string{
+		"group",
+		"version",
+		"kind",
+		"objName",
+		"objNamespace",
+		"eventType",
+		"reason",
+		"controller",
+	}
+}
+
+func (c eventCounterLabel) values() []string {
+	return []string{
+		c.group,
+		c.version,
+		c.kind,
+		c.objName,
+		c.objNamespace,
+		c.eventType,
+		c.reason,
+		c.controller,
+	}
+}
+
+// partialValues returns the label values for requested object name, namespace, and controller name.
+// used for deleting event metrics for requested objects that no longer exist.
+func (c eventCounterLabel) partialValues() prometheus.Labels {
+	return prometheus.Labels{
+		"objName":      c.objName,
+		"objNamespace": c.objNamespace,
+		"controller":   c.controller,
+	}
+}
