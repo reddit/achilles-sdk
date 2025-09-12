@@ -233,7 +233,7 @@ func (m *Metrics) RecordProcessingDuration(
 	return nil
 }
 
-// RecordEvent records an metric for anevent for the given object.
+// RecordEvent records a metric for an event for the given object.
 func (m *Metrics) RecordEvent(
 	triggerGVK schema.GroupVersionKind,
 	objectName string,
