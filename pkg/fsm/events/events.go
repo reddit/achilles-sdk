@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	EventReadyReason = "Ready"
+	eventReadyReason = "Ready"
 
-	EventTypeNormal  = "Normal"
-	EventTypeWarning = "Warning"
+	eventTypeNormal  = "Normal"
+	eventTypeWarning = "Warning"
 )
 
 type EventRecorder struct {
@@ -34,27 +34,27 @@ func (e *EventRecorder) RecordReady(obj client.Object, message string) {
 	if message == "" {
 		message = "Object is ready"
 	}
-	e.recorder.Event(obj, EventTypeNormal, EventReadyReason, message)
+	e.recorder.Event(obj, eventTypeNormal, eventReadyReason, message)
 
 	if e.metrics != nil {
-		e.metrics.RecordEvent(obj.GetObjectKind().GroupVersionKind(), obj.GetName(), obj.GetNamespace(), EventTypeNormal, EventReadyReason, e.controllerName)
+		e.metrics.RecordEvent(obj.GetObjectKind().GroupVersionKind(), obj.GetName(), obj.GetNamespace(), eventTypeNormal, eventReadyReason, e.controllerName)
 	}
 }
 
 // RecordWarning records a warning event for the given object.
 func (e *EventRecorder) RecordWarning(obj client.Object, reason string, message string) {
-	e.recorder.Event(obj, EventTypeWarning, reason, message)
+	e.recorder.Event(obj, eventTypeWarning, reason, message)
 
 	if e.metrics != nil {
-		e.metrics.RecordEvent(obj.GetObjectKind().GroupVersionKind(), obj.GetName(), obj.GetNamespace(), EventTypeWarning, reason, e.controllerName)
+		e.metrics.RecordEvent(obj.GetObjectKind().GroupVersionKind(), obj.GetName(), obj.GetNamespace(), eventTypeWarning, reason, e.controllerName)
 	}
 }
 
 // RecordEvent records a normal event for the given object.
 func (e *EventRecorder) RecordEvent(obj client.Object, reason string, message string) {
-	e.recorder.Event(obj, EventTypeNormal, reason, message)
+	e.recorder.Event(obj, eventTypeNormal, reason, message)
 
 	if e.metrics != nil {
-		e.metrics.RecordEvent(obj.GetObjectKind().GroupVersionKind(), obj.GetName(), obj.GetNamespace(), EventTypeNormal, reason, e.controllerName)
+		e.metrics.RecordEvent(obj.GetObjectKind().GroupVersionKind(), obj.GetName(), obj.GetNamespace(), eventTypeNormal, reason, e.controllerName)
 	}
 }
