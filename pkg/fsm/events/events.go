@@ -23,7 +23,7 @@ type EventRecorder struct {
 }
 
 // NewEventRecorder creates a new EventRecorder for the given controller and manager.
-// metrics is optional and can be nil. if provided, it will be used to emit metrics for each event.
+// Metrics is optional and can be nil. If provided, it will be used to emit metrics for each event.
 func NewEventRecorder(controllerName string, manager ctrl.Manager, metrics *metrics.Metrics) *EventRecorder {
 	return &EventRecorder{recorder: manager.GetEventRecorderFor(controllerName), metrics: metrics, controllerName: controllerName}
 }
