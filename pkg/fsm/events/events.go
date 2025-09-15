@@ -1,3 +1,24 @@
+// Package events provides Kubernetes event recording
+//
+// The events package offers a high-level interface for recording Kubernetes events
+// with deduplication to optionally prevent spam and reduce noise in event logs.
+//
+// # Basic Usage
+//
+// Create an EventRecorder using NewEventRecorder:
+//
+//	eventRecorder := events.NewEventRecorder("my-controller", manager, metrics)
+//
+// Record different types of events:
+//
+//	// Record a ready event (always deduplicated)
+//	eventRecorder.RecordReady(obj, "Object is now ready")
+//
+//	// Record a normal event with optional deduplication
+//	eventRecorder.RecordEvent(obj, "ProcessingComplete", "Processing finished successfully", true)
+//
+//	// Record a warning event with optional deduplication
+//	eventRecorder.RecordWarning(obj, "ValidationFailed", "Invalid configuration detected", true)
 package events
 
 import (
@@ -30,7 +51,15 @@ type EventRecorder struct {
 }
 
 // NewEventRecorder creates a new EventRecorder for the given controller and manager.
-// Metrics is optional and can be nil. If provided, it will be used to emit metrics for each event.
+//
+// The EventRecorder provides a high-level interface for recording Kubernetes events.
+//
+// Parameters:
+//   - controllerName: Name of the controller (used for event attribution)
+//   - manager: Controller-runtime manager
+//   - metrics: Optional metrics recorder (can be nil to disable metrics)
+//
+// Returns a configured EventRecorder ready for use.
 func NewEventRecorder(controllerName string, manager ctrl.Manager, metrics *metrics.Metrics) *EventRecorder {
 	return &EventRecorder{
 		recorder:       manager.GetEventRecorderFor(controllerName),
@@ -41,8 +70,18 @@ func NewEventRecorder(controllerName string, manager ctrl.Manager, metrics *metr
 	}
 }
 
-// RecordReady records a ready event for the given object
-// It will only record the event the first time it is called (i.e. deduplication is always enabled for the Ready event)
+// RecordReady records a ready event for the given object.
+//
+// This method always enables deduplication to prevent spam of "ready" events.
+// If message is empty, it defaults to "Object is ready".
+//
+// Parameters:
+//   - obj: The Kubernetes object to record the event for
+//   - message: Optional message (defaults to "Object is ready" if empty)
+//
+// Example:
+//
+//	eventRecorder.RecordReady(pod, "Pod is ready to serve traffic")
 func (e *EventRecorder) RecordReady(obj client.Object, message string) {
 	if message == "" {
 		message = "Object is ready"
@@ -51,7 +90,18 @@ func (e *EventRecorder) RecordReady(obj client.Object, message string) {
 }
 
 // RecordWarning records a warning event for the given object.
-// If deduplicationEnabled is true, it will only record the event the first time it is called.
+//
+// Warning events indicate errors, failures, or problematic conditions.
+//
+// Parameters:
+//   - obj: The Kubernetes object to record the event for
+//   - reason: The reason for the warning (e.g., "ValidationFailed", "ResourceNotFound")
+//   - message: Descriptive message explaining the warning
+//   - deduplicationEnabled: If true, identical events will not be recorded
+//
+// Example:
+//
+//	eventRecorder.RecordWarning(pod, "ImagePullFailed", "Failed to pull image: nginx:latest", true)
 func (e *EventRecorder) RecordWarning(obj client.Object, reason string, message string, deduplicationEnabled bool) {
 	if deduplicationEnabled {
 		if e.isDuplicateEventForObject(obj, eventTypeWarning, reason, message) {
@@ -67,7 +117,18 @@ func (e *EventRecorder) RecordWarning(obj client.Object, reason string, message 
 }
 
 // RecordEvent records a normal event for the given object.
-// If deduplicationEnabled is true, it will only record the event the first time it is called.
+//
+// Normal events indicate successful operations, state changes, or informational updates.
+//
+// Parameters:
+//   - obj: The Kubernetes object to record the event for
+//   - reason: The reason for the event (e.g., "ProcessingComplete", "ConfigUpdated")
+//   - message: Descriptive message explaining the event
+//   - deduplicationEnabled: If true, identical events will not be recorded
+//
+// Example:
+//
+//	eventRecorder.RecordEvent(deployment, "ScalingComplete", "Scaled to 3 replicas", true)
 func (e *EventRecorder) RecordEvent(obj client.Object, reason string, message string, deduplicationEnabled bool) {
 	if deduplicationEnabled {
 		if e.isDuplicateEventForObject(obj, eventTypeNormal, reason, message) {
