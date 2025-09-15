@@ -232,3 +232,31 @@ func (m *Metrics) RecordProcessingDuration(
 
 	return nil
 }
+
+// RecordEvent records a metric for an event for the given object.
+func (m *Metrics) RecordEvent(
+	triggerGVK schema.GroupVersionKind,
+	objectName string,
+	objectNamespace string,
+	eventType string,
+	reason string,
+	controllerName string,
+) {
+	if m.sink == nil {
+		return
+	}
+
+	m.sink.RecordEvent(triggerGVK, objectName, objectNamespace, eventType, reason, controllerName)
+}
+
+// DeleteEvent deletes event metrics for the given triggered object and controller name.
+func (m *Metrics) DeleteEvent(
+	obj client.Object,
+) {
+	if m.sink == nil {
+		return
+	}
+
+	typedObjectRef := meta.MustTypedObjectRefFromObject(obj, m.scheme)
+	m.sink.DeleteEvent(typedObjectRef.ObjectKey(), typedObjectRef.GroupVersionKind())
+}
