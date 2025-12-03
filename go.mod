@@ -18,7 +18,7 @@ require (
 	github.com/reddit/achilles-sdk-api v1.1.1
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.11.1
-	go.uber.org/zap v1.27.0
+	go.uber.org/zap v1.27.1
 	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8
 	golang.org/x/sync v0.18.0
 	golang.org/x/time v0.12.0
