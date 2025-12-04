@@ -287,6 +287,13 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 		}
 
 		if err := r.applyOutputs(ctx, log, obj, out); err != nil {
+			// Mark the state's condition as failed since outputs couldn't be applied
+			if !condition.IsEmpty() {
+				condition.Status = corev1.ConditionFalse
+				condition.Reason = "ApplyOutputsFailed"
+				condition.Message = fmt.Sprintf("Failed to apply outputs: %v", err)
+				conditions.SetConditions(condition)
+			}
 			return obj, conditions, types.ErrorResult(fmt.Errorf("applying outputs: %w", err))
 		}
 
