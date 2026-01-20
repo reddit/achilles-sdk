@@ -557,7 +557,7 @@ func Test_ProcessingStartTimes_Concurrency(t *testing.T) {
 	const numWriters = 10
 	const numOps = 1000
 
-	// Pre-populate
+	// Pre-populate with name-{0..4}, ns-{0..4}, generation {0..999}
 	for i := 0; i < 1000; i++ {
 		name := fmt.Sprintf("name-%d", i%5)
 		ns := fmt.Sprintf("ns-%d", i%5)
@@ -595,6 +595,7 @@ func Test_ProcessingStartTimes_Concurrency(t *testing.T) {
 				case 1:
 					p.DeleteRange(name, ns, int64(j))
 				case 2:
+					// exercise that SetRangeFailed can run concurrently with other operations
 					p.SetRangeFailed(name, ns, int64(j))
 				}
 			}
