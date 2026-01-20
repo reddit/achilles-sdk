@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -543,4 +545,55 @@ func Test_ProcessingStartTimes_SetRangeFailed(t *testing.T) {
 			assert.Equal(t, tc.expectedTree, got)
 		})
 	}
+}
+
+func Test_ProcessingStartTimes_Concurrency(t *testing.T) {
+	p := NewProcessingStartTimes()
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	// Number of concurrent readers and writers
+	const numReaders = 10
+	const numWriters = 10
+	const numOps = 1000
+
+	// Readers
+	for i := 0; i < numReaders; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			<-start
+			for j := 0; j < numOps; j++ {
+				// Read varied keys
+				name := fmt.Sprintf("name-%d", j%5)
+				ns := fmt.Sprintf("ns-%d", j%5)
+				p.GetRange(name, ns, int64(j%10), j%2 == 0)
+			}
+		}(i)
+	}
+
+	// Writers
+	for i := 0; i < numWriters; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			<-start
+			for j := 0; j < numOps; j++ {
+				name := fmt.Sprintf("name-%d", j%5)
+				ns := fmt.Sprintf("ns-%d", j%5)
+				op := j % 3
+				switch op {
+				case 0:
+					p.Set(name, ns, int64(j%10), time.Now())
+				case 1:
+					p.DeleteRange(name, ns, int64(j%10))
+				case 2:
+					p.SetRangeFailed(name, ns, int64(j%10))
+				}
+			}
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
 }
