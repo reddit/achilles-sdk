@@ -557,6 +557,13 @@ func Test_ProcessingStartTimes_Concurrency(t *testing.T) {
 	const numWriters = 10
 	const numOps = 1000
 
+	// Pre-populate
+	for i := 0; i < 1000; i++ {
+		name := fmt.Sprintf("name-%d", i%5)
+		ns := fmt.Sprintf("ns-%d", i%5)
+		p.Set(name, ns, int64(i), time.Now())
+	}
+
 	// Readers
 	for i := 0; i < numReaders; i++ {
 		wg.Add(1)
@@ -584,11 +591,11 @@ func Test_ProcessingStartTimes_Concurrency(t *testing.T) {
 				op := j % 3
 				switch op {
 				case 0:
-					p.Set(name, ns, int64(j%10), time.Now())
+					p.Set(name, ns, int64(j), time.Now())
 				case 1:
-					p.DeleteRange(name, ns, int64(j%10))
+					p.DeleteRange(name, ns, int64(j))
 				case 2:
-					p.SetRangeFailed(name, ns, int64(j%10))
+					p.SetRangeFailed(name, ns, int64(j))
 				}
 			}
 		}(i)
