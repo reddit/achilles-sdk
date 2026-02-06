@@ -100,7 +100,7 @@ func Test_GetUnreadyResources(t *testing.T) {
 		// Create a new instance of the TransitionWhenReady function
 		unreadyResources, err := GetUnreadyResources(
 			ctx,
-			c,
+			c.Client,
 			scheme,
 			log,
 			tc.parent,
@@ -234,7 +234,7 @@ func Test_TransitionWhenReady(t *testing.T) {
 
 		// Create a new instance of the TransitionWhenReady function
 		actualNextState, actualResult := TransitionWhenReady[*testv1alpha1.TestClaimed](
-			c,
+			c.Client,
 			scheme,
 			log,
 			successState,

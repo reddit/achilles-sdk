@@ -266,7 +266,7 @@ func DeleteChildrenForeground[T ResourceManagerObject](
 		parent T,
 		out *OutputSet,
 	) (*State[T], Result) {
-		children, err := readManagedResources(ctx, c, scheme, parent)
+		children, err := readManagedResources(ctx, c.Client, scheme, parent)
 		if err != nil {
 			return nil, ErrorResultf("reading managed resources: %w", err)
 		}
@@ -321,7 +321,8 @@ func readManagedResources(
 
 	for _, res := range parent.GetManagedResources() {
 		res := res // pike
-		managedObj, err := meta.NewObjectForGVK(scheme, res.GroupVersionKind())
+		gvk := res.GroupVersionKind()
+		managedObj, err := meta.NewObjectForGVK(scheme, gvk)
 		if err != nil {
 			return nil, fmt.Errorf("constructing new %T %s: %w", managedObj, client.ObjectKeyFromObject(managedObj), err)
 		}
@@ -333,6 +334,8 @@ func readManagedResources(
 			}
 			return nil, fmt.Errorf("getting managed resource %T %s: %w", managedObj, client.ObjectKeyFromObject(managedObj), err)
 		} else {
+			// Restore TypeMeta after Get since some clients don't preserve it
+			managedObj.GetObjectKind().SetGroupVersionKind(gvk)
 			managedResources = append(managedResources, managedObj)
 		}
 	}

@@ -109,7 +109,7 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 			}
 		} else {
 			// remove finalizer, we're ready to delete
-			if err := meta.RemoveFinalizer(ctx, r.Client, claim, finalizer); err != nil && !k8serrors.IsNotFound(err) {
+			if err := meta.RemoveFinalizer(ctx, r.Client.Client, claim, finalizer); err != nil && !k8serrors.IsNotFound(err) {
 				return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 			}
 		}
@@ -118,7 +118,7 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 	}
 
 	// ensure finalizer on claim
-	if err := meta.AddFinalizer(ctx, r.Client, claim, finalizer); err != nil {
+	if err := meta.AddFinalizer(ctx, r.Client.Client, claim, finalizer); err != nil {
 		return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 	}
 

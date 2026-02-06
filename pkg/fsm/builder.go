@@ -276,7 +276,7 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			managedGVKs[i] = managedType.gvk
 		}
 
-		r := b.Reconciler(log, scheme, c, metrics)
+		r := b.Reconciler(log, scheme, c.Client, metrics)
 
 		builder := ctrl.NewControllerManagedBy(mgr).
 			WithOptions(controller.Options{

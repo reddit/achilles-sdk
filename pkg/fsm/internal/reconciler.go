@@ -148,7 +148,7 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	// having been processed (if, for instance, an external actor deletes the object after `r.reconcile(ctx, req)`
 	// and before this condition.
 	if meta.WasDeleted(obj) && r.finalizerState != nil && result.IsDone() {
-		if err := meta.RemoveFinalizer(ctx, r.client, obj, finalizerKey); err != nil {
+		if err := meta.RemoveFinalizer(ctx, r.client.Client, obj, finalizerKey); err != nil {
 			return ctrl.Result{}, fmt.Errorf("removing FSM finalizer: %w", err)
 		}
 	}
@@ -210,7 +210,7 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 	// ensure finalizer if finalizer states exist, do not add if the resource has already been deleted
 	// as no new finalizers can be added to the resource
 	if r.finalizerState != nil && !slices.Contains(obj.GetFinalizers(), finalizerKey) && !meta.WasDeleted(obj) {
-		if err := meta.AddFinalizer(ctx, r.client, obj, finalizerKey); err != nil {
+		if err := meta.AddFinalizer(ctx, r.client.Client, obj, finalizerKey); err != nil {
 			return nil, nil, types.ErrorResult(fmt.Errorf("adding FSM finalizer: %w", err))
 		}
 	}

@@ -24,6 +24,10 @@ type ClientApplicator struct {
 	Applicator
 }
 
+func (ca *ClientApplicator) Apply(ctx context.Context, obj client.Object, opts ...ApplyOption) error {
+	return ca.Applicator.Apply(ctx, obj, opts...)
+}
+
 // An Applicator applies changes to an object.
 type Applicator interface {
 	Apply(context.Context, client.Object, ...ApplyOption) error
