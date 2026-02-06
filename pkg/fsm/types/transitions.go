@@ -334,7 +334,8 @@ func readManagedResources(
 			}
 			return nil, fmt.Errorf("getting managed resource %T %s: %w", managedObj, client.ObjectKeyFromObject(managedObj), err)
 		} else {
-			// Restore TypeMeta after Get since some clients don't preserve it
+			// Restore TypeMeta after Get since clients (both fake and real) don't preserve it.
+			// See: https://github.com/kubernetes-sigs/controller-runtime/issues/1517
 			managedObj.GetObjectKind().SetGroupVersionKind(gvk)
 			managedResources = append(managedResources, managedObj)
 		}
