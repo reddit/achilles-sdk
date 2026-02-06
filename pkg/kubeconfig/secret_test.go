@@ -23,7 +23,7 @@ var _ = Describe("kubeconfig secret", func() {
 	}
 
 	cfg := &api.Config{
-		Preferences: api.Preferences{Extensions: map[string]runtime.Object{}},
+		Preferences: api.Preferences{}, // Extensions remains nil after serialization/deserialization
 		Clusters: map[string]*api.Cluster{
 			"orchestration-cluster": {
 				Server:                   "host",

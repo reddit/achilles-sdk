@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -98,4 +99,11 @@ func (c *filteringSubResourceClient) Patch(ctx context.Context, obj client.Objec
 	}
 
 	return c.client.Patch(ctx, obj, patch, opts...)
+}
+
+func (c *filteringSubResourceClient) Apply(ctx context.Context, applyConfig runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+	// Apply operations cannot be filtered because runtime.ApplyConfiguration is not a client.Object.
+	// The Filter interface expects client.Object for validation/mutation, but ApplyConfiguration
+	// is a different type used for server-side apply and cannot be easily converted.
+	return c.client.Apply(ctx, applyConfig, opts...)
 }

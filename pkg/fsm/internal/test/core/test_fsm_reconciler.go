@@ -112,7 +112,7 @@ func BuildReconciler(
 	metrics *metrics.Metrics,
 	disableAutoCreate *atomic.Bool,
 ) reconcile.TypedReconciler[ctrl.Request] {
-	return fsmBuilder(log, mgr, c, disableAutoCreate).Reconciler(log, mgr.GetScheme(), c, metrics)
+	return fsmBuilder(log, mgr, c, disableAutoCreate).Reconciler(log, mgr.GetScheme(), c.Client, metrics)
 }
 
 func SetupController(
