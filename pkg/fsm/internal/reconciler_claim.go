@@ -109,7 +109,7 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 			}
 		} else {
 			// remove finalizer, we're ready to delete
-			if err := meta.RemoveFinalizer(ctx, r.Client, claim, finalizer); err != nil && !k8serrors.IsNotFound(err) {
+			if err := meta.RemoveFinalizer(ctx, r.Client.Client, claim, finalizer); err != nil && !k8serrors.IsNotFound(err) {
 				return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 			}
 		}
@@ -118,14 +118,14 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 	}
 
 	// ensure finalizer on claim
-	if err := meta.AddFinalizer(ctx, r.Client, claim, finalizer); err != nil {
+	if err := meta.AddFinalizer(ctx, r.Client.Client, claim, finalizer); err != nil {
 		return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 	}
 
 	// we must claim the bound resource first to prevent races
 	if claim.GetClaimedRef() == nil {
 		claim.SetClaimedRef(claimedRef)
-		if err := r.Client.Apply(ctx, claim); err != nil {
+		if err := r.Client.Applicator.Apply(ctx, claim); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating client with resource ref: %w", err)
 		}
 	}
@@ -149,7 +149,7 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 	}
 
 	// update operation is needed to ensure suspend label is deleted from claimed object
-	if err := r.Client.Apply(ctx, claimed, io.AsUpdate()); err != nil {
+	if err := r.Client.Applicator.Apply(ctx, claimed, io.AsUpdate()); err != nil {
 		return ctrl.Result{}, fmt.Errorf("applying claimed: %w", err)
 	}
 
