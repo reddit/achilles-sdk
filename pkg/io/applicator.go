@@ -183,7 +183,7 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 
 	err := a.client.Get(ctx, types.NamespacedName{Name: m.GetName(), Namespace: m.GetNamespace()}, current)
 	if kerrors.IsNotFound(err) {
-		return errors.New("object does not exist, cannot update its status")
+		return fmt.Errorf("object does not exist, cannot update its status: %w", err)
 	} else if err != nil {
 		return fmt.Errorf("cannot get object: %w", err)
 	}
