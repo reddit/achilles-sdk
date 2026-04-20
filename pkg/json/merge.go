@@ -15,14 +15,14 @@ func MergeAPIExtensionsJSON(a, b *apiextensionsv1.JSON) (*apiextensionsv1.JSON, 
 	}
 
 	aMap := map[string]interface{}{}
-	if a != nil {
+	if a != nil && len(a.Raw) > 0 {
 		if err := json.Unmarshal(a.Raw, &aMap); err != nil {
 			return nil, fmt.Errorf("unmarshalling first JSON variable: %w", err)
 		}
 	}
 
 	var bMap map[string]interface{}
-	if b != nil {
+	if b != nil && len(b.Raw) > 0 {
 		if err := json.Unmarshal(b.Raw, &bMap); err != nil {
 			return nil, fmt.Errorf("unmarshalling second JSON variable: %w", err)
 		}
