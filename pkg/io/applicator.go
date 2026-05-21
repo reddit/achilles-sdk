@@ -24,6 +24,15 @@ type ClientApplicator struct {
 	Applicator
 }
 
+var _ Applicator = (*ClientApplicator)(nil)
+
+// Apply delegates to the embedded Applicator, resolving the ambiguity between
+// client.Client.Apply (server-side apply, added in controller-runtime v0.22)
+// and Applicator.Apply (patch-based apply with io.ApplyOption).
+func (ca *ClientApplicator) Apply(ctx context.Context, obj client.Object, opts ...ApplyOption) error {
+	return ca.Applicator.Apply(ctx, obj, opts...)
+}
+
 // An Applicator applies changes to an object.
 type Applicator interface {
 	Apply(context.Context, client.Object, ...ApplyOption) error
