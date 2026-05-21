@@ -2,6 +2,7 @@ package io
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -68,6 +69,46 @@ func WithOptimisticLock() ApplyOption {
 func AsUpdate() ApplyOption {
 	return func(ctx context.Context, _ client.Object, requestOpts *RequestOptions) error {
 		requestOpts.Update = true
+		return nil
+	}
+}
+
+// AsServerSideApply causes Apply (and ApplyStatus) to use server-side apply (PATCH with ApplyPatchType)
+// instead of the default JSON merge patch. fieldManager is the name recorded in managedFields to track
+// which fields this caller owns. Use this when multiple controllers manage different fields of the same
+// resource — the apiserver will enforce that two managers cannot own the same field without an explicit
+// conflict resolution.
+//
+// Cannot be combined with AsUpdate. May be combined with WithForceOwnership to claim fields
+// currently owned by another manager.
+//
+// Important caveats:
+//   - Server-side apply skips the local Get + diff loop; idempotency is handled by the apiserver.
+//   - Fields with the `omitempty` JSON tag whose Go value is the zero value (e.g. 0, "", false) will be
+//     omitted from the JSON body and will NOT be set to zero — they will instead release ownership.
+//     Use pointer types (*int, *string, etc.) for fields you need to explicitly zero via SSA.
+func AsServerSideApply(fieldManager string) ApplyOption {
+	return func(ctx context.Context, _ client.Object, requestOpts *RequestOptions) error {
+		if fieldManager == "" {
+			return fmt.Errorf("AsServerSideApply requires a non-empty fieldManager name")
+		}
+		requestOpts.ServerSideApply = true
+		requestOpts.FieldManager = fieldManager
+		return nil
+	}
+}
+
+// WithForceOwnership, when used with AsServerSideApply, sends ?force=true to claim ownership of fields
+// currently owned by another field manager, resolving any SSA conflicts. Without this option, the
+// apiserver returns HTTP 409 if another manager owns a field present in the apply body.
+//
+// This is typically needed during a one-time migration from client-side apply/patch to server-side apply,
+// to reclaim ownership of fields that were previously written by a different manager name.
+//
+// No-op when AsServerSideApply is not also set.
+func WithForceOwnership() ApplyOption {
+	return func(ctx context.Context, _ client.Object, requestOpts *RequestOptions) error {
+		requestOpts.ForceOwnership = true
 		return nil
 	}
 }

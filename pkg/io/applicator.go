@@ -59,6 +59,19 @@ type RequestOptions struct {
 	// hasExplicitOwnerRefs is true if the caller explicitly sets ownerReferences
 	// This flag, if true, prevents the FSM reconciler from adding the default controller reference.
 	hasExplicitOwnerRefs bool
+
+	// ServerSideApply, if true, performs a server-side apply (PATCH with ApplyPatchType)
+	// instead of a JSON merge patch. FieldManager must be non-empty when this is set.
+	// Cannot be combined with Update.
+	ServerSideApply bool
+
+	// FieldManager is the manager name used for server-side apply.
+	// Required when ServerSideApply is true; ignored otherwise.
+	FieldManager string
+
+	// ForceOwnership, when ServerSideApply is true, sends ?force=true to claim ownership
+	// of fields previously owned by another manager (resolves SSA conflicts).
+	ForceOwnership bool
 }
 
 // An APIPatchingApplicator applies changes to an object by either creating or
@@ -86,22 +99,27 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		return errors.New("cannot access object metadata")
 	}
 
+	desired := current.DeepCopyObject().(client.Object)
+	// apply options to desired
+	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying options: %w", err)
+	}
+
+	// if server-side apply is enabled, we should also use it to create the object.
+	// We also bypass the below get + diff loop, meaning that even if an apply doesn't change an object it will update the fieldManagers.
+	if requestOpts.ServerSideApply {
+		return a.serverSideApply(ctx, desired, requestOpts)
+	}
+
 	if m.GetName() == "" && m.GetGenerateName() != "" {
 		return a.createNewObject(ctx, current, requestOpts, opts)
 	}
-
-	desired := current.DeepCopyObject().(client.Object)
 
 	err := a.client.Get(ctx, types.NamespacedName{Name: m.GetName(), Namespace: m.GetNamespace()}, current)
 	if kerrors.IsNotFound(err) {
 		return a.createNewObject(ctx, current, requestOpts, opts)
 	} else if err != nil {
 		return fmt.Errorf("cannot get object: %w", err)
-	}
-
-	// apply options to desired
-	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
-		return fmt.Errorf("applying options: %w", err)
 	}
 
 	// If there is no difference, we need not perform an update. We convert each into
@@ -121,7 +139,6 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	for _, managedFields := range current.GetManagedFields() {
 		// we're doing a client-side apply, so we assume we own all fields even if the manager is not our own.
 		// in other words, no need to ensure that managedFields.Manager == a.managerName
-		// TODO: we should explore using server-side apply
 		if managedFields.Subresource == "status" {
 			hasStatusSubresource = true
 			break
@@ -159,6 +176,34 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		}
 	}
 
+	return nil
+}
+
+// serverSideApply performs a server-side apply PATCH on the given object.
+// It strips metadata fields that must not be present in an SSA body and sends
+// the request with the configured FieldOwner (and optionally ForceOwnership).
+func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Object, requestOpts *RequestOptions) error {
+	// SSA requires apiVersion and kind in the patch body.
+	// DeepCopy often produces objects with empty TypeMeta, so populate it explicitly.
+	if requestOpts.Update {
+		return fmt.Errorf("AsUpdate and AsServerSideApply are mutually exclusive")
+	}
+	if desired.GetObjectKind().GroupVersionKind().Empty() {
+		gvk, err := a.client.GroupVersionKindFor(desired)
+		if err != nil {
+			return fmt.Errorf("getting GVK for server-side apply: %w", err)
+		}
+		desired.GetObjectKind().SetGroupVersionKind(gvk)
+	}
+
+	patchOpts := []client.PatchOption{client.FieldOwner(requestOpts.FieldManager)}
+	if requestOpts.ForceOwnership {
+		patchOpts = append(patchOpts, client.ForceOwnership)
+	}
+
+	if err := a.client.Patch(ctx, desired, client.Apply, patchOpts...); err != nil {
+		return fmt.Errorf("cannot server-side apply object: %w", err)
+	}
 	return nil
 }
 
@@ -259,7 +304,6 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 
 type patch struct{ from runtime.Object }
 
-// TODO switch to server side apply
 func (p *patch) Type() types.PatchType                { return types.MergePatchType }
 func (p *patch) Data(_ client.Object) ([]byte, error) { return json.Marshal(p.from) }
 
