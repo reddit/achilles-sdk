@@ -78,7 +78,7 @@ Broadly speaking, there are three types of results:
    terminal state, simply complete
 2. **requeue**—instructs the reconciler to trigger again after a user-specified amount of time. This is used in cases
    where
-   a controller is waiting for an external condition to be fulfilled.
+   a controller is waiting for an external condition to be fulfilled. The SDK will also requeue when applying outputs returns a retryable Conflict error.
 3. **error**—the reconciler logs an error message and will retrigger, the delay of which is subject to exponential
    backoff
 

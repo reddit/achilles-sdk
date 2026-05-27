@@ -475,6 +475,53 @@ var _ = Describe("Controller", Ordered, func() {
 		}).Should(Succeed())
 	})
 
+	It("should requeue with backoff on conflict when applying outputs with optimistic lock", func() {
+		// Pre-create the conflict target ConfigMap
+		conflictTarget := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "conflict-target",
+				Namespace: "default",
+			},
+			Data: map[string]string{"original": "data"},
+		}
+		Expect(c.Create(ctx, conflictTarget)).To(Succeed())
+
+		// Trigger the conflict path via annotation
+		claim := newTestClaim()
+		_, err := controllerutil.CreateOrPatch(ctx, c, claim, func() error {
+			if claim.Annotations == nil {
+				claim.Annotations = map[string]string{}
+			}
+			claim.Annotations["result-type"] = "conflict-on-apply"
+			return nil
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify that conflict was detected, Reason is set, and Ready = false
+		Eventually(func(g Gomega) {
+			actualClaim := &testv1alpha1.TestClaim{}
+			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(claim), actualClaim)).To(Succeed())
+			actual := actualClaim.GetCondition("custom-status-condition")
+			g.Expect(actual.Status).To(Equal(corev1.ConditionFalse))
+			g.Expect(string(actual.Reason)).To(Equal("ApplyOutputsConflict"))
+			g.Expect(status.ResourceReady(actualClaim)).To(BeFalse())
+		}).Should(Succeed())
+
+		// Remove annotation to allow recovery on next reconcile
+		_, err = controllerutil.CreateOrPatch(ctx, c, claim, func() error {
+			delete(claim.Annotations, "result-type")
+			return nil
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		// object goes ready after conflict is resolved
+		Eventually(func(g Gomega) {
+			actualClaim := &testv1alpha1.TestClaim{}
+			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(claim), actualClaim)).To(Succeed())
+			g.Expect(status.ResourceReady(actualClaim)).To(BeTrue())
+		}).Should(Succeed())
+	})
+
 	It("should delete managed resources", func() {
 		// wait for state to be processed
 		Eventually(func(g Gomega) {

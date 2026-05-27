@@ -268,6 +268,15 @@ func (r *reconciler) testResultTypes() *state {
 					return r.noopState(), fsmtypes.DoneAndRequeueAfterCompletionWithBackoff("Done and requeue after completion with backoff")
 				case "requeue-after-completion":
 					return r.noopState(), fsmtypes.DoneAndRequeueAfterCompletion("Done and requeue after completion", 30*time.Second)
+				case "conflict-on-apply":
+					cm := &corev1.ConfigMap{}
+					if err := r.c.Get(ctx, client.ObjectKey{Name: "conflict-target", Namespace: "default"}, cm); err != nil {
+						return nil, fsmtypes.ErrorResult(fmt.Errorf("getting conflict target: %w", err))
+					}
+					cm.Data = map[string]string{"modified-by": "fsm-transition"}
+					cm.SetResourceVersion("1") // deliberately stale to trigger conflict
+					out.Apply(cm, io.WithOptimisticLock())
+					return nil, fsmtypes.DoneResult()
 				}
 			}
 

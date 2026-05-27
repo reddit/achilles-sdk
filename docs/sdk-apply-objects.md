@@ -172,7 +172,9 @@ which consists of:
 
 Usage of the resource lock (i.e. sending the update request with `metadata.resourceVersion` populated) ensures that
 the Kubernetes server will reject the update if it's operating on a version of the object that is out of date.
-This guarantees that your controller will not overwrite data managed by other controllers.
+This guarantees that your controller will not overwrite data managed by other controllers. The SDK transparently
+handles these rejections by requeueing the reconciliation with backoff, which gives your controller the opportunity 
+to read the latest version of the object and retry the update with non-stale data.
 
 To use the resource lock, do the following:
 
