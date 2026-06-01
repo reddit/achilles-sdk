@@ -290,14 +290,26 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 		}
 
 		if err := r.applyOutputs(ctx, log, obj, out); err != nil {
+			var result types.Result
+			if k8serrors.IsConflict(err) {
+				result = types.RequeueResultWithReasonAndBackoff(
+					fmt.Sprintf("conflict applying outputs: %v", err),
+					"ApplyOutputsConflict",
+				)
+			} else {
+				result = types.ErrorResultWithReason(
+					fmt.Errorf("applying outputs: %w", err),
+					"ApplyOutputsFailed",
+				)
+			}
+
 			// Mark the state's condition as failed since outputs couldn't be applied
 			if !condition.IsEmpty() {
 				condition.Status = corev1.ConditionFalse
-				condition.Reason = "ApplyOutputsFailed"
-				condition.Message = fmt.Sprintf("Failed to apply outputs: %v", err)
+				condition.Message, condition.Reason = result.GetMessageAndReason()
 				conditions.SetConditions(condition)
 			}
-			return obj, conditions, types.ErrorResult(fmt.Errorf("applying outputs: %w", err))
+			return obj, conditions, result
 		}
 
 		// accumulate status conditions, overwrites duplicate conditions with those of later states
