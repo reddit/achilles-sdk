@@ -1,8 +1,9 @@
-package internal
+package fsm_test
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -12,7 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -20,16 +21,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/reddit/achilles-sdk-api/api"
+	"github.com/reddit/achilles-sdk/pkg/fsm"
 	"github.com/reddit/achilles-sdk/pkg/fsm/metrics"
-	"github.com/reddit/achilles-sdk/pkg/fsm/types"
+	fsmtypes "github.com/reddit/achilles-sdk/pkg/fsm/types"
+	internalscheme "github.com/reddit/achilles-sdk/pkg/internal/scheme"
 	"github.com/reddit/achilles-sdk/pkg/internal/tests/api/test/v1alpha1"
-	"github.com/reddit/achilles-sdk/pkg/io"
 )
 
 const (
 	applyOutputsConditionType = "ApplyOutputs"
 	applyOutputsCMName        = "output-cm"
 )
+
+var scheme = func() *runtime.Scheme {
+	s := internalscheme.MustNewScheme()
+	if err := v1alpha1.AddToScheme(s); err != nil {
+		panic(fmt.Sprintf("failed to initialize test scheme: %s", err))
+	}
+	return s
+}()
 
 func TestReconciler_ApplyOutputsErrors(t *testing.T) {
 	const (
@@ -97,7 +107,7 @@ func TestReconciler_ApplyOutputsErrors(t *testing.T) {
 				}).
 				Build()
 
-			r := newApplyOutputsFSMReconciler(t, fakeC)
+			r := newApplyOutputsReconciler(t, fakeC)
 
 			result, err := r.Reconcile(ctx, req)
 			if tc.wantErrContain != "" {
@@ -119,44 +129,31 @@ func TestReconciler_ApplyOutputsErrors(t *testing.T) {
 	}
 }
 
-func newApplyOutputsFSMReconciler(t *testing.T, fakeC client.Client) reconcile.Reconciler {
+func newApplyOutputsReconciler(t *testing.T, fakeC client.Client) reconcile.Reconciler {
 	t.Helper()
 
 	log := zaptest.NewLogger(t).Sugar()
-	c := &io.ClientApplicator{
-		Client:     fakeC,
-		Applicator: io.NewAPIPatchingApplicator(fakeC),
-	}
-
 	m := metrics.MustMakeMetrics(scheme, prometheus.NewRegistry())
 	m.InitializeForGVK(v1alpha1.TestClaimGroupVersionKind)
 
-	initialState := &types.State[*v1alpha1.TestClaim]{
+	initialState := &fsmtypes.State[*v1alpha1.TestClaim]{
 		Name: "apply-outputs",
 		Condition: api.Condition{
 			Type:    applyOutputsConditionType,
 			Message: "Applying outputs",
 		},
-		Transition: func(_ context.Context, claim *v1alpha1.TestClaim, out *types.OutputSet) (*types.State[*v1alpha1.TestClaim], types.Result) {
+		Transition: func(_ context.Context, claim *v1alpha1.TestClaim, out *fsmtypes.OutputSet) (*fsmtypes.State[*v1alpha1.TestClaim], fsmtypes.Result) {
 			out.Apply(&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      applyOutputsCMName,
 					Namespace: claim.GetNamespace(),
 				},
 			})
-			return nil, types.DoneResult()
+			return nil, fsmtypes.DoneResult()
 		},
 	}
 
-	return NewFSMReconciler(
-		"test-controller",
-		log,
-		c,
-		scheme,
-		initialState,
-		nil,
-		[]schema.GroupVersionKind{corev1.SchemeGroupVersion.WithKind("ConfigMap")},
-		m,
-		types.ReconcilerOptions[v1alpha1.TestClaim, *v1alpha1.TestClaim]{},
-	)
+	return fsm.NewBuilder(&v1alpha1.TestClaim{}, initialState, scheme).
+		Manages(corev1.SchemeGroupVersion.WithKind("ConfigMap")).
+		Reconciler(log, scheme, fakeC, m)
 }
