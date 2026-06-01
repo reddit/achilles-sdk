@@ -3,7 +3,6 @@ package fsm_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,15 +32,18 @@ const (
 	applyOutputsCMName        = "output-cm"
 )
 
-var scheme = func() *runtime.Scheme {
-	s := internalscheme.MustNewScheme()
-	if err := v1alpha1.AddToScheme(s); err != nil {
-		panic(fmt.Sprintf("failed to initialize test scheme: %s", err))
+func testScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+
+	s, err := internalscheme.NewScheme()
+	if err != nil {
+		t.Fatal(err)
 	}
 	return s
-}()
+}
 
 func TestReconciler_ApplyOutputsErrors(t *testing.T) {
+	scheme := testScheme(t)
 	const (
 		claimName      = "test-claim"
 		claimNamespace = "default"
@@ -107,7 +109,7 @@ func TestReconciler_ApplyOutputsErrors(t *testing.T) {
 				}).
 				Build()
 
-			r := newApplyOutputsReconciler(t, fakeC)
+			r := newApplyOutputsReconciler(t, scheme, fakeC)
 
 			result, err := r.Reconcile(ctx, req)
 			if tc.wantErrContain != "" {
@@ -129,7 +131,7 @@ func TestReconciler_ApplyOutputsErrors(t *testing.T) {
 	}
 }
 
-func newApplyOutputsReconciler(t *testing.T, fakeC client.Client) reconcile.Reconciler {
+func newApplyOutputsReconciler(t *testing.T, scheme *runtime.Scheme, fakeC client.Client) reconcile.Reconciler {
 	t.Helper()
 
 	log := zaptest.NewLogger(t).Sugar()
