@@ -290,6 +290,15 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 		}
 
 		if err := r.applyOutputs(ctx, log, obj, out); err != nil {
+			// if the error is a conflict, requeue with backoff instead of erroring
+			if k8serrors.IsConflict(err) {
+				condition.Status = corev1.ConditionFalse
+				condition.Reason = "ApplyOutputsConflict"
+				condition.Message = fmt.Sprintf("Conflict when applying outputs: %v", err)
+				conditions.SetConditions(condition)
+				return obj, conditions, types.RequeueResultWithBackoff(fmt.Sprintf("conflict when applying outputs: %v", err))
+			}
+
 			// Mark the state's condition as failed since outputs couldn't be applied
 			if !condition.IsEmpty() {
 				condition.Status = corev1.ConditionFalse
