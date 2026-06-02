@@ -100,14 +100,14 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	}
 
 	desired := current.DeepCopyObject().(client.Object)
-	// apply options to desired
-	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
-		return fmt.Errorf("applying options: %w", err)
-	}
 
 	// if server-side apply is enabled, we should also use it to create the object.
 	// We also bypass the below get + diff loop, meaning that even if an apply doesn't change an object it will update the fieldManagers.
 	if requestOpts.ServerSideApply {
+		// apply options to desired
+		if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+			return fmt.Errorf("applying options: %w", err)
+		}
 		return a.serverSideApply(ctx, desired, requestOpts)
 	}
 
@@ -120,6 +120,11 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		return a.createNewObject(ctx, current, requestOpts, opts)
 	} else if err != nil {
 		return fmt.Errorf("cannot get object: %w", err)
+	}
+
+	// apply options to desired
+	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying options: %w", err)
 	}
 
 	// If there is no difference, we need not perform an update. We convert each into
