@@ -13,6 +13,9 @@ import (
 // WithRedditLabels applies a standard set of labels for managed resources.
 func WithRedditLabels(controllerName string) ApplyOption {
 	return func(ctx context.Context, o client.Object, _ *RequestOptions) error {
+		if o == nil {
+			return nil
+		}
 		meta.SetRedditLabels(o, controllerName)
 		return nil
 	}
@@ -22,6 +25,9 @@ func WithRedditLabels(controllerName string) ApplyOption {
 // When used in the context of OutputSet, this option is used by default unless WithoutOwnerRef is specified.
 func WithControllerRef(owner client.Object, scheme *runtime.Scheme) ApplyOption {
 	return func(ctx context.Context, o client.Object, opts *RequestOptions) error {
+		if o == nil {
+			return nil
+		}
 		// skip if WithoutOwnerRefs is set or if the caller explicitly specifies ownerReferences
 		if opts.WithoutOwnerRefs || opts.hasExplicitOwnerRefs {
 			return nil
@@ -39,6 +45,9 @@ func WithOwnerRef(owner client.Object, scheme *runtime.Scheme) ApplyOption {
 			return nil
 		}
 		opts.hasExplicitOwnerRefs = true // prevent FSM reconciler from adding the default controller reference
+		if o == nil {
+			return nil
+		}
 		return meta.SetOwnerRef(o, owner, scheme)
 	}
 }
@@ -53,12 +62,10 @@ func WithoutOwnerRefs() ApplyOption {
 	}
 }
 
-// WithOptimisticLock returns an error if the desired object is missing the resource version
+// WithOptimisticLock requires the desired object to include a resource version when patching
+// or updating an existing object. The check is deferred until apply time so creates are not blocked.
 func WithOptimisticLock() ApplyOption {
-	return func(ctx context.Context, o client.Object, opts *RequestOptions) error {
-		if o.GetResourceVersion() == "" {
-			return ResourceVersionMissing{}
-		}
+	return func(_ context.Context, _ client.Object, opts *RequestOptions) error {
 		opts.EnforceOptimisticLock = true
 		return nil
 	}

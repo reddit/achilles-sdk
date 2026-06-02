@@ -100,14 +100,16 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	}
 
 	desired := current.DeepCopyObject().(client.Object)
-	// apply options to desired
-	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+
+	if err := configureRequestOptions(opts, requestOpts); err != nil {
 		return fmt.Errorf("applying options: %w", err)
 	}
 
-	// if server-side apply is enabled, we should also use it to create the object.
-	// We also bypass the below get + diff loop, meaning that even if an apply doesn't change an object it will update the fieldManagers.
+	// Server-side apply applies options before the Get/create path and bypasses the diff loop.
 	if requestOpts.ServerSideApply {
+		if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+			return fmt.Errorf("applying options: %w", err)
+		}
 		return a.serverSideApply(ctx, desired, requestOpts)
 	}
 
@@ -120,6 +122,11 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		return a.createNewObject(ctx, current, requestOpts, opts)
 	} else if err != nil {
 		return fmt.Errorf("cannot get object: %w", err)
+	}
+
+	// apply options to desired after confirming the object exists (or on the create path above).
+	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying options: %w", err)
 	}
 
 	// If there is no difference, we need not perform an update. We convert each into
@@ -151,6 +158,10 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 
 	if reflect.DeepEqual(before, after) {
 		return nil
+	}
+
+	if err := validateOptimisticLock(requestOpts, desired); err != nil {
+		return fmt.Errorf("applying options: %w", err)
 	}
 
 	// request options that modify apply behavior
@@ -306,6 +317,25 @@ type patch struct{ from runtime.Object }
 
 func (p *patch) Type() types.PatchType                { return types.MergePatchType }
 func (p *patch) Data(_ client.Object) ([]byte, error) { return json.Marshal(p.from) }
+
+// configureRequestOptions applies opts with a nil object so request-level options
+// (e.g. AsServerSideApply) can be resolved before Get/create. Object-mutating options
+// no-op when the object is nil.
+func configureRequestOptions(opts []ApplyOption, requestOpts *RequestOptions) error {
+	for _, opt := range opts {
+		if err := opt(context.Background(), nil, requestOpts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateOptimisticLock(requestOpts *RequestOptions, desired metav1.Object) error {
+	if requestOpts.EnforceOptimisticLock && desired.GetResourceVersion() == "" {
+		return ResourceVersionMissing{}
+	}
+	return nil
+}
 
 // apply the apply options, mutating the specified object and request opts
 func applyOpts(ctx context.Context, o client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {

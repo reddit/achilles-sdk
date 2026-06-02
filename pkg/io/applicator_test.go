@@ -394,6 +394,33 @@ var _ = Describe("Applicator", func() {
 			}).Should(Succeed())
 		})
 
+		By("creating the object if it doesn't exist with optimistic lock", func() {
+			svcCreate := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "svc-optimistic-create",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Protocol:   corev1.ProtocolTCP,
+							Port:       8080,
+							TargetPort: intstr.IntOrString{IntVal: 8080},
+						},
+					},
+				},
+			}
+
+			Expect(applicator.Apply(ctx, svcCreate, io.WithOptimisticLock())).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svcCreate), actual)).To(Succeed())
+				g.Expect(actual.Spec.Ports).To(Equal(svcCreate.Spec.Ports))
+			}).Should(Succeed())
+		})
+
 		By("enforcing optimistic lock", func() {
 			// empty resource version in patch should cause failure
 			svc.SetResourceVersion("")
