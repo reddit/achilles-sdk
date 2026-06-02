@@ -90,9 +90,23 @@ func applyOptsEqual(a, b []io.ApplyOption) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	if len(a) == 0 {
-		return true
+	// https://github.com/google/go-cmp/issues/162
+	// this logic is needed for comparing function pointer equality
+	for _, applyOptA := range a {
+		pa := *(*unsafe.Pointer)(unsafe.Pointer(&applyOptA))
+
+		var found bool
+		for _, applyOptB := range b {
+			pb := *(*unsafe.Pointer)(unsafe.Pointer(&applyOptB))
+			if pa == pb {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return false
+		}
 	}
-	// OutputSet stores the slice passed to Apply; compare slice identity.
-	return uintptr(unsafe.Pointer(&a[0])) == uintptr(unsafe.Pointer(&b[0]))
+	return true
 }
