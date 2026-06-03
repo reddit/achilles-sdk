@@ -99,24 +99,22 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		return errors.New("cannot access object metadata")
 	}
 
-	ssaDesired := current.DeepCopyObject().(client.Object)
-	// apply options to ssaDesired; we do this to mutate
-	// requestOpts so we can properly evaluate requestOpts.ServerSideApply
-	if err := applyOpts(ctx, ssaDesired, requestOpts, opts); err != nil {
-		return fmt.Errorf("applying options: %w", err)
-	}
+	desired := current.DeepCopyObject().(client.Object)
 
 	// if server-side apply is enabled, we should also use it to create the object.
 	// We also bypass the below get + diff loop, meaning that even if an apply doesn't change an object it will update the fieldManagers.
 	if requestOpts.ServerSideApply {
-		return a.serverSideApply(ctx, ssaDesired, requestOpts)
+		// apply options to desired
+		if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+			return fmt.Errorf("applying options: %w", err)
+		}
+		return a.serverSideApply(ctx, desired, requestOpts)
 	}
 
 	if m.GetName() == "" && m.GetGenerateName() != "" {
 		return a.createNewObject(ctx, current, requestOpts, opts)
 	}
 
-	desired := current.DeepCopyObject().(client.Object)
 	err := a.client.Get(ctx, types.NamespacedName{Name: m.GetName(), Namespace: m.GetNamespace()}, current)
 	if kerrors.IsNotFound(err) {
 		return a.createNewObject(ctx, current, requestOpts, opts)
