@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/reddit/achilles-sdk/pkg/encoding/json"
-	liberrors "github.com/reddit/achilles-sdk/pkg/errors"
 )
 
 // A ClientApplicator may be used to build a single 'client' that satisfies both
@@ -39,8 +38,31 @@ type Applicator interface {
 	ApplyStatus(context.Context, client.Object, ...ApplyOption) error
 }
 
-// An ApplyOption mutates the desired object before applying
-type ApplyOption func(ctx context.Context, o client.Object, requestOpts *RequestOptions) error
+// ApplyOption configures how Apply/ApplyStatus mutate the desired object and issue requests.
+// Request-level configuration runs before Get/create; object-level configuration requires a non-nil object.
+type ApplyOption struct {
+	configureRequest func(*RequestOptions) error
+	configureObject  func(context.Context, client.Object, *RequestOptions) error
+}
+
+func (o ApplyOption) apply(ctx context.Context, obj client.Object, requestOpts *RequestOptions) error {
+	if o.configureRequest != nil {
+		if err := o.configureRequest(requestOpts); err != nil {
+			return err
+		}
+	}
+	if o.configureObject != nil {
+		return o.configureObject(ctx, obj, requestOpts)
+	}
+	return nil
+}
+
+func (o ApplyOption) configureRequestOnly(requestOpts *RequestOptions) error {
+	if o.configureRequest == nil {
+		return nil
+	}
+	return o.configureRequest(requestOpts)
+}
 
 // options for the kube-apiserver request
 type RequestOptions struct {
@@ -100,14 +122,16 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	}
 
 	desired := current.DeepCopyObject().(client.Object)
-	// apply options to desired
-	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+
+	if err := configureRequestOptions(opts, requestOpts); err != nil {
 		return fmt.Errorf("applying options: %w", err)
 	}
 
-	// if server-side apply is enabled, we should also use it to create the object.
-	// We also bypass the below get + diff loop, meaning that even if an apply doesn't change an object it will update the fieldManagers.
+	// Server-side apply applies options before the Get/create path and bypasses the diff loop.
 	if requestOpts.ServerSideApply {
+		if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+			return fmt.Errorf("applying options: %w", err)
+		}
 		return a.serverSideApply(ctx, desired, requestOpts)
 	}
 
@@ -120,6 +144,11 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		return a.createNewObject(ctx, current, requestOpts, opts)
 	} else if err != nil {
 		return fmt.Errorf("cannot get object: %w", err)
+	}
+
+	// apply options to desired after confirming the object exists (or on the create path above).
+	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying options: %w", err)
 	}
 
 	// If there is no difference, we need not perform an update. We convert each into
@@ -151,6 +180,10 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 
 	if reflect.DeepEqual(before, after) {
 		return nil
+	}
+
+	if err := validateOptimisticLock(requestOpts, desired); err != nil {
+		return fmt.Errorf("applying options: %w", err)
 	}
 
 	// request options that modify apply behavior
@@ -210,10 +243,7 @@ func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Obje
 // createNewObject handles creating a new object with options applied
 func (a *APIApplicator) createNewObject(ctx context.Context, obj client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {
 	// apply options to obj
-	if err := applyOpts(ctx, obj, requestOpts, opts); liberrors.Ignore(func(err error) bool {
-		// ignore optimistic lock error when creating an object because resource version does not yet exist
-		return errors.Is(err, ResourceVersionMissing{})
-	}, err) != nil {
+	if err := applyOpts(ctx, obj, requestOpts, opts); err != nil {
 		return err
 	}
 
@@ -307,11 +337,27 @@ type patch struct{ from runtime.Object }
 func (p *patch) Type() types.PatchType                { return types.MergePatchType }
 func (p *patch) Data(_ client.Object) ([]byte, error) { return json.Marshal(p.from) }
 
-// apply the apply options, mutating the specified object and request opts
+// configureRequestOptions applies request-level options before Get/create.
+func configureRequestOptions(opts []ApplyOption, requestOpts *RequestOptions) error {
+	for _, opt := range opts {
+		if err := opt.configureRequestOnly(requestOpts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateOptimisticLock(requestOpts *RequestOptions, desired metav1.Object) error {
+	if requestOpts.EnforceOptimisticLock && desired.GetResourceVersion() == "" {
+		return ResourceVersionMissing{}
+	}
+	return nil
+}
+
+// applyOpts applies all options to the specified object and request opts.
 func applyOpts(ctx context.Context, o client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {
-	// apply options
-	for _, fn := range opts {
-		if err := fn(ctx, o, requestOpts); err != nil {
+	for _, opt := range opts {
+		if err := opt.apply(ctx, o, requestOpts); err != nil {
 			return err
 		}
 	}
