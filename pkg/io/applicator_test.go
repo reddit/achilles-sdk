@@ -394,7 +394,7 @@ var _ = Describe("Applicator", func() {
 			}).Should(Succeed())
 		})
 
-		By("creating the object if it doesn't exist with optimistic lock", func() {
+		By("creating the object if it doesn't exist with optimistic lock (and thus no resource version)", func() {
 			svcCreate := &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "svc-optimistic-create",
