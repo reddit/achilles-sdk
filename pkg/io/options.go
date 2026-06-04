@@ -10,6 +10,20 @@ import (
 	"github.com/reddit/achilles-sdk/pkg/meta"
 )
 
+// requestOption builds an ApplyOption whose hook runs only during configureRequestOptions.
+// Use it for flags that affect how Apply/ApplyStatus talk to the API (patch vs update, SSA,
+// optimistic lock) and must be known before Get or create, without mutating the desired object.
+func requestOption(fn func(*RequestOptions) error) ApplyOption {
+	return ApplyOption{configureRequest: fn}
+}
+
+// objectOption builds an ApplyOption whose hook runs only during applyObjectOptions.
+// Use it to mutate the desired object (labels, owner references) once request options are
+// resolved and the applicator has a concrete object to send (create, patch, or SSA).
+func objectOption(fn func(context.Context, client.Object, *RequestOptions) error) ApplyOption {
+	return ApplyOption{configureObject: fn}
+}
+
 // WithRedditLabels applies a standard set of labels for managed resources.
 func WithRedditLabels(controllerName string) ApplyOption {
 	return objectOption(func(_ context.Context, o client.Object, _ *RequestOptions) error {
@@ -116,12 +130,4 @@ func WithForceOwnership() ApplyOption {
 		requestOpts.ForceOwnership = true
 		return nil
 	})
-}
-
-func requestOption(fn func(*RequestOptions) error) ApplyOption {
-	return ApplyOption{configureRequest: fn}
-}
-
-func objectOption(fn func(context.Context, client.Object, *RequestOptions) error) ApplyOption {
-	return ApplyOption{configureObject: fn}
 }
