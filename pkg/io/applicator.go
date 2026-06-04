@@ -45,23 +45,18 @@ type ApplyOption struct {
 	configureObject  func(context.Context, client.Object, *RequestOptions) error
 }
 
-func (o ApplyOption) apply(ctx context.Context, obj client.Object, requestOpts *RequestOptions) error {
-	if o.configureRequest != nil {
-		if err := o.configureRequest(requestOpts); err != nil {
-			return err
-		}
-	}
-	if o.configureObject != nil {
-		return o.configureObject(ctx, obj, requestOpts)
-	}
-	return nil
-}
-
 func (o ApplyOption) configureRequestOnly(requestOpts *RequestOptions) error {
 	if o.configureRequest == nil {
 		return nil
 	}
 	return o.configureRequest(requestOpts)
+}
+
+func (o ApplyOption) configureObjectOnly(ctx context.Context, obj client.Object, requestOpts *RequestOptions) error {
+	if o.configureObject == nil {
+		return nil
+	}
+	return o.configureObject(ctx, obj, requestOpts)
 }
 
 // options for the kube-apiserver request
@@ -124,13 +119,13 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	desired := current.DeepCopyObject().(client.Object)
 
 	if err := configureRequestOptions(opts, requestOpts); err != nil {
-		return fmt.Errorf("applying options: %w", err)
+		return fmt.Errorf("applying request options: %w", err)
 	}
 
-	// Server-side apply applies options before the Get/create path and bypasses the diff loop.
+	// Server-side apply mutates desired and bypasses the Get/create path and diff loop.
 	if requestOpts.ServerSideApply {
-		if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
-			return fmt.Errorf("applying options: %w", err)
+		if err := applyObjectOptions(ctx, desired, requestOpts, opts); err != nil {
+			return fmt.Errorf("applying object options: %w", err)
 		}
 		return a.serverSideApply(ctx, desired, requestOpts)
 	}
@@ -146,9 +141,8 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		return fmt.Errorf("cannot get object: %w", err)
 	}
 
-	// apply options to desired after confirming the object exists (or on the create path above).
-	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
-		return fmt.Errorf("applying options: %w", err)
+	if err := applyObjectOptions(ctx, desired, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying object options: %w", err)
 	}
 
 	// If there is no difference, we need not perform an update. We convert each into
@@ -240,11 +234,10 @@ func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Obje
 	return nil
 }
 
-// createNewObject handles creating a new object with options applied
+// createNewObject handles creating a new object with object options applied.
 func (a *APIApplicator) createNewObject(ctx context.Context, obj client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {
-	// apply options to obj
-	if err := applyOpts(ctx, obj, requestOpts, opts); err != nil {
-		return err
+	if err := applyObjectOptions(ctx, obj, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying object options: %w", err)
 	}
 
 	if err := a.client.Create(ctx, obj); err != nil {
@@ -262,6 +255,10 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 	}
 	requestOpts := &RequestOptions{}
 
+	if err := configureRequestOptions(opts, requestOpts); err != nil {
+		return fmt.Errorf("applying request options: %w", err)
+	}
+
 	current := o.DeepCopyObject().(client.Object) // copy so original object isn't mutated by patch
 	desired := o.DeepCopyObject().(client.Object)
 
@@ -272,9 +269,8 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 		return fmt.Errorf("cannot get object: %w", err)
 	}
 
-	// apply options to desired
-	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
-		return fmt.Errorf("applying options: %w", err)
+	if err := applyObjectOptions(ctx, desired, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying object options: %w", err)
 	}
 
 	before, err := runtime.DefaultUnstructuredConverter.ToUnstructured(current)
@@ -354,15 +350,15 @@ func validateOptimisticLock(requestOpts *RequestOptions, desired metav1.Object) 
 	return nil
 }
 
-// applyOpts applies all options to the specified object and request opts.
-func applyOpts(ctx context.Context, o client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {
+// applyObjectOptions mutates o using object-level options. requestOpts must already be
+// populated via configureRequestOptions.
+func applyObjectOptions(ctx context.Context, o client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {
 	for _, opt := range opts {
-		if err := opt.apply(ctx, o, requestOpts); err != nil {
+		if err := opt.configureObjectOnly(ctx, o, requestOpts); err != nil {
 			return err
 		}
 	}
 
-	// apply options that mutate object
 	if requestOpts.WithoutOwnerRefs {
 		o.SetOwnerReferences([]metav1.OwnerReference{}) // must explicitly signal deletion when using JSON merge semantics
 	}
