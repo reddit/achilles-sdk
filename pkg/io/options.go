@@ -10,7 +10,7 @@ import (
 	"github.com/reddit/achilles-sdk/pkg/meta"
 )
 
-// requestOption builds an ApplyOption whose hook runs only during configureRequestOptions.
+// requestOption is an option that affects how the Kubernetes request is performed.
 // Use it for flags that affect how Apply/ApplyStatus talk to the API (patch vs update, SSA,
 // optimistic lock) and must be known before Get or create, without mutating the desired object.
 func requestOption(fn func(*RequestOptions) error) ApplyOption {
