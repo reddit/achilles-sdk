@@ -177,7 +177,7 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	}
 
 	if err := validateOptimisticLock(requestOpts, desired); err != nil {
-		return fmt.Errorf("applying options: %w", err)
+		return fmt.Errorf("applying optimistic lock: %w", err)
 	}
 
 	// request options that modify apply behavior
