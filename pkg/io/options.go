@@ -17,7 +17,7 @@ func requestOption(fn func(*RequestOptions) error) ApplyOption {
 	return ApplyOption{configureRequest: fn}
 }
 
-// objectOption builds an ApplyOption whose hook runs only during applyObjectOptions.
+// objectOption is an option that mutates the object being created or updated.
 // Use it to mutate the desired object (labels, owner references) once request options are
 // resolved and the applicator has a concrete object to send (create, patch, or SSA).
 func objectOption(fn func(context.Context, client.Object, *RequestOptions) error) ApplyOption {
