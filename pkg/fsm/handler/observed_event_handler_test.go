@@ -434,6 +434,199 @@ func TestObserveEnqueueObject(t *testing.T) {
 	}
 }
 
+func TestObserveEnqueueObjectUpdatePredicate(t *testing.T) {
+	now := metav1.Now()
+
+	cases := []struct {
+		name             string
+		options          fsmhandler.ForObservePredicateOptions
+		oldObj           client.Object
+		newObj           client.Object
+		expected         bool
+		expectedLogCount int
+	}{
+		{
+			name: "observes status-only updates by default",
+			oldObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+				},
+			},
+			newObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "foobar",
+					Generation:      1,
+					ResourceVersion: "2",
+				},
+			},
+			expected:         true,
+			expectedLogCount: 1,
+		},
+		{
+			name: "ignores status-only updates when enabled",
+			options: fsmhandler.ForObservePredicateOptions{
+				IgnoreStatusOnlyUpdates: true,
+			},
+			oldObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+				},
+			},
+			newObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "foobar",
+					Generation:      1,
+					ResourceVersion: "2",
+				},
+			},
+		},
+		{
+			name: "observes generation updates",
+			oldObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+				},
+			},
+			newObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 2,
+				},
+			},
+			expected:         true,
+			expectedLogCount: 1,
+		},
+		{
+			name: "observes deletion timestamp updates",
+			oldObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+				},
+			},
+			newObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "foobar",
+					Generation:        1,
+					DeletionTimestamp: &now,
+				},
+			},
+			expected:         true,
+			expectedLogCount: 1,
+		},
+		{
+			name: "observes label updates",
+			oldObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+					Labels: map[string]string{
+						"infrared.reddit.com/suspend": "true",
+					},
+				},
+			},
+			newObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+					Labels: map[string]string{
+						"infrared.reddit.com/suspend": "false",
+					},
+				},
+			},
+			expected:         true,
+			expectedLogCount: 1,
+		},
+		{
+			name: "observes annotation updates",
+			oldObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+				},
+			},
+			newObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+					Annotations: map[string]string{
+						"example.com/reconcile": "now",
+					},
+				},
+			},
+			expected:         true,
+			expectedLogCount: 1,
+		},
+		{
+			name: "observes finalizer updates",
+			oldObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+				},
+			},
+			newObj: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "foobar",
+					Generation: 1,
+					Finalizers: []string{
+						"infrared.reddit.com/fsm",
+					},
+				},
+			},
+			expected:         true,
+			expectedLogCount: 1,
+		},
+	}
+
+	scheme, err := internalscheme.NewScheme()
+	if err != nil {
+		t.Fatalf("constructing scheme: %s", err)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			observedZapCore, observedLogs := observer.New(zap.DebugLevel)
+			log := zap.New(observedZapCore).Sugar()
+			reg := prometheus.NewRegistry()
+			m := metrics.MustMakeMetrics(scheme, reg)
+
+			h := fsmhandler.NewForObservePredicate(
+				log,
+				scheme,
+				controllerName,
+				m,
+				tc.options,
+			)
+
+			actual := h.Update(event.UpdateEvent{
+				ObjectOld: tc.oldObj,
+				ObjectNew: tc.newObj,
+			})
+			assert.Equal(t, tc.expected, actual)
+
+			if tc.expectedLogCount > 0 {
+				assertExpectedLogMessages(t, []expectedLog{
+					{
+						msg: "received trigger",
+						kvs: map[string]string{
+							"request": "/foobar",
+							"event":   "update",
+							"type":    fsmhandler.TriggerTypeSelf.String(),
+						},
+					},
+				}, observedLogs)
+			} else {
+				assertExpectedLogMessages(t, nil, observedLogs)
+				assertExpectedCounterMetrics(t, reg, nil, nil, "achilles_trigger")
+			}
+		})
+	}
+}
+
 func assertExpectedLogMessages(
 	t *testing.T,
 	expected []expectedLog,
