@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/reddit/achilles-sdk/pkg/encoding/json"
-	liberrors "github.com/reddit/achilles-sdk/pkg/errors"
 )
 
 // A ClientApplicator may be used to build a single 'client' that satisfies both
@@ -24,14 +23,41 @@ type ClientApplicator struct {
 	Applicator
 }
 
+var _ Applicator = (*ClientApplicator)(nil)
+
+// Apply delegates to the embedded Applicator, resolving the ambiguity between
+// client.Client.Apply (server-side apply, added in controller-runtime v0.22)
+// and Applicator.Apply (patch-based apply with io.ApplyOption).
+func (ca *ClientApplicator) Apply(ctx context.Context, obj client.Object, opts ...ApplyOption) error {
+	return ca.Applicator.Apply(ctx, obj, opts...)
+}
+
 // An Applicator applies changes to an object.
 type Applicator interface {
 	Apply(context.Context, client.Object, ...ApplyOption) error
 	ApplyStatus(context.Context, client.Object, ...ApplyOption) error
 }
 
-// An ApplyOption mutates the desired object before applying
-type ApplyOption func(ctx context.Context, o client.Object, requestOpts *RequestOptions) error
+// ApplyOption configures how Apply/ApplyStatus mutate the desired object and issue requests.
+// Request-level configuration runs before Get/create; object-level configuration requires a non-nil object.
+type ApplyOption struct {
+	configureRequest func(*RequestOptions) error
+	configureObject  func(context.Context, client.Object, *RequestOptions) error
+}
+
+func (o ApplyOption) configureRequestOnly(requestOpts *RequestOptions) error {
+	if o.configureRequest == nil {
+		return nil
+	}
+	return o.configureRequest(requestOpts)
+}
+
+func (o ApplyOption) configureObjectOnly(ctx context.Context, obj client.Object, requestOpts *RequestOptions) error {
+	if o.configureObject == nil {
+		return nil
+	}
+	return o.configureObject(ctx, obj, requestOpts)
+}
 
 // options for the kube-apiserver request
 type RequestOptions struct {
@@ -50,6 +76,19 @@ type RequestOptions struct {
 	// hasExplicitOwnerRefs is true if the caller explicitly sets ownerReferences
 	// This flag, if true, prevents the FSM reconciler from adding the default controller reference.
 	hasExplicitOwnerRefs bool
+
+	// ServerSideApply, if true, performs a server-side apply (PATCH with ApplyPatchType)
+	// instead of a JSON merge patch. FieldManager must be non-empty when this is set.
+	// Cannot be combined with Update.
+	ServerSideApply bool
+
+	// FieldManager is the manager name used for server-side apply.
+	// Required when ServerSideApply is true; ignored otherwise.
+	FieldManager string
+
+	// ForceOwnership, when ServerSideApply is true, sends ?force=true to claim ownership
+	// of fields previously owned by another manager (resolves SSA conflicts).
+	ForceOwnership bool
 }
 
 // An APIPatchingApplicator applies changes to an object by either creating or
@@ -77,11 +116,23 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		return errors.New("cannot access object metadata")
 	}
 
+	desired := current.DeepCopyObject().(client.Object)
+
+	if err := configureRequestOptions(opts, requestOpts); err != nil {
+		return fmt.Errorf("applying request options: %w", err)
+	}
+
+	// Server-side apply mutates desired and bypasses the Get/create path and diff loop.
+	if requestOpts.ServerSideApply {
+		if err := applyObjectOptions(ctx, desired, requestOpts, opts); err != nil {
+			return fmt.Errorf("applying object options: %w", err)
+		}
+		return a.serverSideApply(ctx, desired, requestOpts)
+	}
+
 	if m.GetName() == "" && m.GetGenerateName() != "" {
 		return a.createNewObject(ctx, current, requestOpts, opts)
 	}
-
-	desired := current.DeepCopyObject().(client.Object)
 
 	err := a.client.Get(ctx, types.NamespacedName{Name: m.GetName(), Namespace: m.GetNamespace()}, current)
 	if kerrors.IsNotFound(err) {
@@ -90,9 +141,8 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 		return fmt.Errorf("cannot get object: %w", err)
 	}
 
-	// apply options to desired
-	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
-		return fmt.Errorf("applying options: %w", err)
+	if err := applyObjectOptions(ctx, desired, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying object options: %w", err)
 	}
 
 	// If there is no difference, we need not perform an update. We convert each into
@@ -112,7 +162,6 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	for _, managedFields := range current.GetManagedFields() {
 		// we're doing a client-side apply, so we assume we own all fields even if the manager is not our own.
 		// in other words, no need to ensure that managedFields.Manager == a.managerName
-		// TODO: we should explore using server-side apply
 		if managedFields.Subresource == "status" {
 			hasStatusSubresource = true
 			break
@@ -125,6 +174,10 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 
 	if reflect.DeepEqual(before, after) {
 		return nil
+	}
+
+	if err := validateOptimisticLock(requestOpts, desired); err != nil {
+		return fmt.Errorf("applying optimistic lock: %w", err)
 	}
 
 	// request options that modify apply behavior
@@ -153,14 +206,38 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	return nil
 }
 
-// createNewObject handles creating a new object with options applied
+// serverSideApply performs a server-side apply PATCH on the given object.
+// It strips metadata fields that must not be present in an SSA body and sends
+// the request with the configured FieldOwner (and optionally ForceOwnership).
+func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Object, requestOpts *RequestOptions) error {
+	// SSA requires apiVersion and kind in the patch body.
+	// DeepCopy often produces objects with empty TypeMeta, so populate it explicitly.
+	if requestOpts.Update {
+		return fmt.Errorf("AsUpdate and AsServerSideApply are mutually exclusive")
+	}
+	if desired.GetObjectKind().GroupVersionKind().Empty() {
+		gvk, err := a.client.GroupVersionKindFor(desired)
+		if err != nil {
+			return fmt.Errorf("getting GVK for server-side apply: %w", err)
+		}
+		desired.GetObjectKind().SetGroupVersionKind(gvk)
+	}
+
+	patchOpts := []client.PatchOption{client.FieldOwner(requestOpts.FieldManager)}
+	if requestOpts.ForceOwnership {
+		patchOpts = append(patchOpts, client.ForceOwnership)
+	}
+
+	if err := a.client.Patch(ctx, desired, client.Apply, patchOpts...); err != nil {
+		return fmt.Errorf("cannot server-side apply object: %w", err)
+	}
+	return nil
+}
+
+// createNewObject handles creating a new object with object options applied.
 func (a *APIApplicator) createNewObject(ctx context.Context, obj client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {
-	// apply options to obj
-	if err := applyOpts(ctx, obj, requestOpts, opts); liberrors.Ignore(func(err error) bool {
-		// ignore optimistic lock error when creating an object because resource version does not yet exist
-		return errors.Is(err, ResourceVersionMissing{})
-	}, err) != nil {
-		return err
+	if err := applyObjectOptions(ctx, obj, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying object options: %w", err)
 	}
 
 	if err := a.client.Create(ctx, obj); err != nil {
@@ -178,19 +255,22 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 	}
 	requestOpts := &RequestOptions{}
 
+	if err := configureRequestOptions(opts, requestOpts); err != nil {
+		return fmt.Errorf("applying request options: %w", err)
+	}
+
 	current := o.DeepCopyObject().(client.Object) // copy so original object isn't mutated by patch
 	desired := o.DeepCopyObject().(client.Object)
 
 	err := a.client.Get(ctx, types.NamespacedName{Name: m.GetName(), Namespace: m.GetNamespace()}, current)
 	if kerrors.IsNotFound(err) {
-		return errors.New("object does not exist, cannot update its status")
+		return fmt.Errorf("object does not exist, cannot update its status: %w", err)
 	} else if err != nil {
 		return fmt.Errorf("cannot get object: %w", err)
 	}
 
-	// apply options to desired
-	if err := applyOpts(ctx, desired, requestOpts, opts); err != nil {
-		return fmt.Errorf("applying options: %w", err)
+	if err := applyObjectOptions(ctx, desired, requestOpts, opts); err != nil {
+		return fmt.Errorf("applying object options: %w", err)
 	}
 
 	before, err := runtime.DefaultUnstructuredConverter.ToUnstructured(current)
@@ -250,20 +330,35 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 
 type patch struct{ from runtime.Object }
 
-// TODO switch to server side apply
 func (p *patch) Type() types.PatchType                { return types.MergePatchType }
 func (p *patch) Data(_ client.Object) ([]byte, error) { return json.Marshal(p.from) }
 
-// apply the apply options, mutating the specified object and request opts
-func applyOpts(ctx context.Context, o client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {
-	// apply options
-	for _, fn := range opts {
-		if err := fn(ctx, o, requestOpts); err != nil {
+// configureRequestOptions applies request-level options before Get/create.
+func configureRequestOptions(opts []ApplyOption, requestOpts *RequestOptions) error {
+	for _, opt := range opts {
+		if err := opt.configureRequestOnly(requestOpts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateOptimisticLock(requestOpts *RequestOptions, desired metav1.Object) error {
+	if requestOpts.EnforceOptimisticLock && desired.GetResourceVersion() == "" {
+		return ResourceVersionMissing{}
+	}
+	return nil
+}
+
+// applyObjectOptions mutates o using object-level options. requestOpts must already be
+// populated via configureRequestOptions.
+func applyObjectOptions(ctx context.Context, o client.Object, requestOpts *RequestOptions, opts []ApplyOption) error {
+	for _, opt := range opts {
+		if err := opt.configureObjectOnly(ctx, o, requestOpts); err != nil {
 			return err
 		}
 	}
 
-	// apply options that mutate object
 	if requestOpts.WithoutOwnerRefs {
 		o.SetOwnerReferences([]metav1.OwnerReference{}) // must explicitly signal deletion when using JSON merge semantics
 	}

@@ -140,6 +140,7 @@ func (p *ProcessingStartTimes) SetRangeFailed(name string, namespace string, obs
 		Generation: observedGeneration,
 	}
 
+	var items []requestStartTime
 	p.startTimes.DescendLessOrEqual(key, func(item requestStartTime) bool {
 		if item.Name != key.Name || item.Namespace != key.Namespace {
 			// end of range for (name, namespace)
@@ -151,9 +152,14 @@ func (p *ProcessingStartTimes) SetRangeFailed(name string, namespace string, obs
 			return false
 		}
 
-		item.Failed = true
-		p.startTimes.ReplaceOrInsert(item)
-
+		// accumulate items to delete to avoid mutating tree while iterating,
+		// because this btree implementation doesn't support mutation while iterating, see https://github.com/google/btree/issues/18#issuecomment-283457598
+		items = append(items, item)
 		return true
 	})
+
+	for _, item := range items {
+		item.Failed = true
+		p.startTimes.ReplaceOrInsert(item)
+	}
 }

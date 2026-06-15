@@ -149,7 +149,7 @@ func ensureOutputs[T any, Obj apitypes.FSMResource[T]](
 			// NOTE: add the default WithControllerRef last so it's not invoked if WithoutOwnerRefs is set
 			applyOpts := append(output.ApplyOpts, io.WithControllerRef(obj, scheme))
 
-			if err := c.Apply(ctx, res, applyOpts...); err != nil {
+			if err := c.Applicator.Apply(ctx, res, applyOpts...); err != nil {
 				return fmt.Errorf("ensuring %s %s: %w", res.GetObjectKind().GroupVersionKind(), res.GetName(), err)
 			}
 		}

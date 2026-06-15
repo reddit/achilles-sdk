@@ -266,7 +266,9 @@ func DeleteChildrenForeground[T ResourceManagerObject](
 		parent T,
 		out *OutputSet,
 	) (*State[T], Result) {
-		children, err := readManagedResources(ctx, c, scheme, parent)
+		// c embeds both client.Client and Applicator; pass the explicit client.Client
+		// to avoid method ambiguity in newer controller-runtime versions.
+		children, err := readManagedResources(ctx, c.Client, scheme, parent)
 		if err != nil {
 			return nil, ErrorResultf("reading managed resources: %w", err)
 		}

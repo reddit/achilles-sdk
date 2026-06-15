@@ -394,6 +394,33 @@ var _ = Describe("Applicator", func() {
 			}).Should(Succeed())
 		})
 
+		By("creating the object if it doesn't exist with optimistic lock (and thus no resource version)", func() {
+			svcCreate := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "svc-optimistic-create",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Protocol:   corev1.ProtocolTCP,
+							Port:       8080,
+							TargetPort: intstr.IntOrString{IntVal: 8080},
+						},
+					},
+				},
+			}
+
+			Expect(applicator.Apply(ctx, svcCreate, io.WithOptimisticLock())).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svcCreate), actual)).To(Succeed())
+				g.Expect(actual.Spec.Ports).To(Equal(svcCreate.Spec.Ports))
+			}).Should(Succeed())
+		})
+
 		By("enforcing optimistic lock", func() {
 			// empty resource version in patch should cause failure
 			svc.SetResourceVersion("")
@@ -502,7 +529,109 @@ var _ = Describe("Applicator", func() {
 				TestField: "test-update-will-fail",
 			}
 
-			Expect(errors.IsNotFound(applicator.ApplyStatus(ctx, testResourceNoSubresourcePatch.DeepCopy())))
+			Expect(errors.IsNotFound(applicator.ApplyStatus(ctx, testResourceNoSubresourcePatch.DeepCopy()))).To(BeTrue())
+		})
+	})
+
+	It("should support server-side apply", func() {
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "svc-ssa",
+				Namespace: "default",
+			},
+			Spec: corev1.ServiceSpec{
+				Ports: []corev1.ServicePort{
+					{
+						Name:       "http",
+						Protocol:   corev1.ProtocolTCP,
+						Port:       8080,
+						TargetPort: intstr.IntOrString{IntVal: 8080},
+					},
+				},
+				Selector:    map[string]string{"app": "test"},
+				ExternalIPs: []string{"1.1.1.1"},
+			},
+		}
+
+		By("creating an object that does not exist via SSA", func() {
+			Expect(applicator.Apply(ctx, svc.DeepCopy(), io.AsServerSideApply("test-manager"))).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), actual)).To(Succeed())
+				g.Expect(actual.Spec.ExternalIPs).To(Equal([]string{"1.1.1.1"}))
+				// confirm the SSA manager entry is present in managedFields
+				var found bool
+				for _, mf := range actual.GetManagedFields() {
+					if mf.Manager == "test-manager" && string(mf.Operation) == "Apply" {
+						found = true
+						break
+					}
+				}
+				g.Expect(found).To(BeTrue(), "expected managedFields entry for test-manager with Apply operation")
+			}).Should(Succeed())
+		})
+
+		By("applying an existing object via SSA updates the field and keeps the managed fields entry", func() {
+			svcUpdated := svc.DeepCopy()
+			svcUpdated.Spec.ExternalIPs = []string{"2.2.2.2"}
+			Expect(applicator.Apply(ctx, svcUpdated, io.AsServerSideApply("test-manager"))).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), actual)).To(Succeed())
+				g.Expect(actual.Spec.ExternalIPs).To(Equal([]string{"2.2.2.2"}))
+				var found bool
+				for _, mf := range actual.GetManagedFields() {
+					if mf.Manager == "test-manager" && string(mf.Operation) == "Apply" {
+						found = true
+						break
+					}
+				}
+				g.Expect(found).To(BeTrue(), "expected managedFields entry for test-manager with Apply operation")
+			}).Should(Succeed())
+		})
+
+		By("conflicting SSA apply without force returns a conflict error", func() {
+			// manager-a already owns spec.externalIPs from the steps above.
+			// manager-b tries to claim the same field without force.
+			svcB := svc.DeepCopy()
+			svcB.Spec.ExternalIPs = []string{"3.3.3.3"}
+			err := applicator.Apply(ctx, svcB, io.AsServerSideApply("manager-b"))
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsConflict(err)).To(BeTrue(), "expected a conflict error but got: %v", err)
+		})
+
+		By("conflicting SSA apply with WithForceOwnership succeeds and transfers ownership", func() {
+			svcB := svc.DeepCopy()
+			svcB.Spec.ExternalIPs = []string{"3.3.3.3"}
+			Expect(applicator.Apply(ctx, svcB, io.AsServerSideApply("manager-b"), io.WithForceOwnership())).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), actual)).To(Succeed())
+				g.Expect(actual.Spec.ExternalIPs).To(Equal([]string{"3.3.3.3"}))
+				// manager-b should now own the field
+				var found bool
+				for _, mf := range actual.GetManagedFields() {
+					if mf.Manager == "manager-b" && string(mf.Operation) == "Apply" {
+						found = true
+						break
+					}
+				}
+				g.Expect(found).To(BeTrue(), "expected managedFields entry for manager-b with Apply operation")
+			}).Should(Succeed())
+		})
+
+		By("combining AsServerSideApply with AsUpdate returns a mutual exclusion error", func() {
+			err := applicator.Apply(ctx, svc.DeepCopy(), io.AsServerSideApply("test-manager"), io.AsUpdate())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("mutually exclusive"))
+		})
+
+		By("AsServerSideApply with an empty fieldManager returns an error", func() {
+			err := applicator.Apply(ctx, svc.DeepCopy(), io.AsServerSideApply(""))
+			Expect(err).To(HaveOccurred())
 		})
 	})
 

@@ -54,6 +54,38 @@ func TestMergeMaps(t *testing.T) {
 				Raw: nil,
 			},
 		},
+		{
+			name: "handle non-nil struct with nil Raw (first arg)",
+			a:    &apiextensionsv1.JSON{},
+			b:    nil,
+			expected: &apiextensionsv1.JSON{
+				Raw: []byte(`{}`),
+			},
+		},
+		{
+			name: "handle non-nil struct with nil Raw (second arg)",
+			a:    nil,
+			b:    &apiextensionsv1.JSON{},
+			expected: &apiextensionsv1.JSON{
+				Raw: []byte(`{}`),
+			},
+		},
+		{
+			name: "handle both non-nil structs with nil Raw",
+			a:    &apiextensionsv1.JSON{},
+			b:    &apiextensionsv1.JSON{},
+			expected: &apiextensionsv1.JSON{
+				Raw: []byte(`{}`),
+			},
+		},
+		{
+			name: "handle non-nil struct with empty Raw bytes",
+			a:    &apiextensionsv1.JSON{Raw: []byte{}},
+			b:    &apiextensionsv1.JSON{Raw: []byte{}},
+			expected: &apiextensionsv1.JSON{
+				Raw: []byte(`{}`),
+			},
+		},
 	}
 
 	for _, tc := range stringStringCases {

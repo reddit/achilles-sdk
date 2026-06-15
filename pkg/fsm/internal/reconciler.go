@@ -137,6 +137,9 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 		// NOTE: status must be updated upon termination of FSM, otherwise steady state won't be reached because
 		// later states that overwrite status conditions of earlier states will trigger reconcile events
 		if err := r.client.ApplyStatus(ctx, obj); err != nil {
+			if k8serrors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 		}
 	}
@@ -148,7 +151,7 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	// having been processed (if, for instance, an external actor deletes the object after `r.reconcile(ctx, req)`
 	// and before this condition.
 	if meta.WasDeleted(obj) && r.finalizerState != nil && result.IsDone() {
-		if err := meta.RemoveFinalizer(ctx, r.client, obj, finalizerKey); err != nil {
+		if err := meta.RemoveFinalizer(ctx, r.client.Client, obj, finalizerKey); err != nil {
 			return ctrl.Result{}, fmt.Errorf("removing FSM finalizer: %w", err)
 		}
 	}
@@ -210,7 +213,7 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 	// ensure finalizer if finalizer states exist, do not add if the resource has already been deleted
 	// as no new finalizers can be added to the resource
 	if r.finalizerState != nil && !slices.Contains(obj.GetFinalizers(), finalizerKey) && !meta.WasDeleted(obj) {
-		if err := meta.AddFinalizer(ctx, r.client, obj, finalizerKey); err != nil {
+		if err := meta.AddFinalizer(ctx, r.client.Client, obj, finalizerKey); err != nil {
 			return nil, nil, types.ErrorResult(fmt.Errorf("adding FSM finalizer: %w", err))
 		}
 	}
@@ -287,6 +290,22 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 		}
 
 		if err := r.applyOutputs(ctx, log, obj, out); err != nil {
+			// if the error is a conflict, requeue with backoff instead of erroring
+			if k8serrors.IsConflict(err) {
+				condition.Status = corev1.ConditionFalse
+				condition.Reason = "ApplyOutputsConflict"
+				condition.Message = fmt.Sprintf("Conflict when applying outputs: %v", err)
+				conditions.SetConditions(condition)
+				return obj, conditions, types.RequeueResultWithBackoff(fmt.Sprintf("conflict when applying outputs: %v", err))
+			}
+
+			// Mark the state's condition as failed since outputs couldn't be applied
+			if !condition.IsEmpty() {
+				condition.Status = corev1.ConditionFalse
+				condition.Reason = "ApplyOutputsFailed"
+				condition.Message = fmt.Sprintf("Failed to apply outputs: %v", err)
+				conditions.SetConditions(condition)
+			}
 			return obj, conditions, types.ErrorResult(fmt.Errorf("applying outputs: %w", err))
 		}
 
