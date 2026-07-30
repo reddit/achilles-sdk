@@ -90,13 +90,17 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	startedAt := time.Now()
 	defer func() { log.Debugf("finished reconcile in %s", time.Since(startedAt)) }()
 
+	defer func() {
+		res, err = ignoreErrorsAfterContextDone(ctx, log, res, err)
+	}()
+
 	// record metrics
 	defer func() {
 		// fetch the object's latest state
 		obj := Obj(new(T))
 		if err := r.client.Get(ctx, req.NamespacedName, obj); err != nil {
-			if !k8serrors.IsNotFound(err) {
-				log.Error("fetching object for recording metrics: %w", err)
+			if !k8serrors.IsNotFound(err) && ctx.Err() == nil {
+				log.Errorf("fetching object for recording metrics: %s", err)
 			}
 			return
 		}
@@ -157,6 +161,23 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return result.Get(log)
+}
+
+// ignoreErrorsAfterContextDone discards a reconcile's result and error if its context is done. The manager cancels the
+// context of every in-flight reconcile when it shuts down, which fails all of their outstanding API requests. Those
+// errors are expected and cannot be acted upon because the work queue is shutting down as well.
+func ignoreErrorsAfterContextDone(
+	ctx context.Context,
+	log *zap.SugaredLogger,
+	res ctrl.Result,
+	err error,
+) (ctrl.Result, error) {
+	if err == nil || ctx.Err() == nil {
+		return res, err
+	}
+
+	log.Debugf("aborting reconcile, context is done: %s", err)
+	return ctrl.Result{}, nil
 }
 
 // reconcile the object through a sequence of FSM states
