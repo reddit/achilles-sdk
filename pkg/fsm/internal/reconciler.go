@@ -99,6 +99,7 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 		// fetch the object's latest state
 		obj := Obj(new(T))
 		if err := r.client.Get(ctx, req.NamespacedName, obj); err != nil {
+			// shutdown cancels this fetch along with the reconcile, making the failure expected
 			if !k8serrors.IsNotFound(err) && ctx.Err() == nil {
 				log.Errorf("fetching object for recording metrics: %s", err)
 			}
@@ -165,7 +166,9 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 
 // ignoreErrorsAfterContextDone discards a reconcile's result and error if its context is done. The manager cancels the
 // context of every in-flight reconcile when it shuts down, which fails all of their outstanding API requests. Those
-// errors are expected and cannot be acted upon because the work queue is shutting down as well.
+// errors are expected and cannot be acted upon because the work queue is shutting down as well. Returning an empty
+// result and a nil error keeps controller-runtime from counting the reconcile as a failure or requeueing work that the
+// shutting-down queue would drop anyway.
 func ignoreErrorsAfterContextDone(
 	ctx context.Context,
 	log *zap.SugaredLogger,
