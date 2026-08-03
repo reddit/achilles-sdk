@@ -89,7 +89,6 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	log.Debug("entering reconcile")
 	startedAt := time.Now()
 	defer func() { log.Debugf("finished reconcile in %s", time.Since(startedAt)) }()
-
 	defer func() {
 		res, err = ignoreErrorsAfterContextDone(ctx, log, res, err)
 	}()
@@ -99,7 +98,6 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 		// fetch the object's latest state
 		obj := Obj(new(T))
 		if err := r.client.Get(ctx, req.NamespacedName, obj); err != nil {
-			// shutdown cancels this fetch along with the reconcile, making the failure expected
 			if !k8serrors.IsNotFound(err) && ctx.Err() == nil {
 				log.Errorf("fetching object for recording metrics: %s", err)
 			}
@@ -164,22 +162,24 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	return result.Get(log)
 }
 
-// ignoreErrorsAfterContextDone discards a reconcile's result and error if its context is done. The manager cancels the
-// context of every in-flight reconcile when it shuts down, which fails all of their outstanding API requests. Those
-// errors are expected and cannot be acted upon because the work queue is shutting down as well. Returning an empty
-// result and a nil error keeps controller-runtime from counting the reconcile as a failure or requeueing work that the
-// shutting-down queue would drop anyway.
+// When the controller is shut down, it cancels the context of every in-progress Reconcile(). This fails every
+// reconciler's outstanding API requests with an error like "client rate limiter Wait returned an error: context canceled".
+// These errors are expected and cannot be acted upon. Ignore them instead of returning an error.
 func ignoreErrorsAfterContextDone(
 	ctx context.Context,
 	log *zap.SugaredLogger,
 	res ctrl.Result,
 	err error,
 ) (ctrl.Result, error) {
+	// If there is no error, continue as normal
 	if err == nil || ctx.Err() == nil {
 		return res, err
 	}
 
+	// The context was Canceled or DeadlineExceeded
 	log.Debugf("aborting reconcile, context is done: %s", err)
+	// Return an empty result and a nil error to prevent controller-runtime from counting the reconcile as a failure and
+	// requeueing the work
 	return ctrl.Result{}, nil
 }
 
