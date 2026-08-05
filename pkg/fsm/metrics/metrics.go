@@ -44,6 +44,10 @@ type Metrics struct {
 
 // MustMakeMetrics creates a new Metrics with a new metrics Sink, and the Metrics.Scheme set to that of the given manager.
 func MustMakeMetrics(scheme *runtime.Scheme, registrar prometheus.Registerer) *Metrics {
+	if err := registerClientRateLimiterMetrics(registrar); err != nil {
+		panic(fmt.Errorf("registering client rate limiter metrics: %w", err))
+	}
+
 	metricsRecorder := NewSink()
 	registrar.MustRegister(metricsRecorder.Collectors()...)
 
