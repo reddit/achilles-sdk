@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	zaputil "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/reddit/achilles-sdk/pkg/logging"
@@ -126,6 +127,10 @@ func Start(
 ) error {
 	log := setupLogging(opts.VerboseMode, opts.DevLogger)
 	ctx = logging.NewContext(ctx, log)
+
+	if err := registerClientRateLimiterMetrics(ctrlmetrics.Registry); err != nil {
+		return fmt.Errorf("registering client rate limiter metrics: %w", err)
+	}
 
 	cfg, err := buildRestConfig(opts)
 	if err != nil {

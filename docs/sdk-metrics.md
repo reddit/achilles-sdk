@@ -9,6 +9,29 @@ The Achilles SDK
 integrates [controller-runtime metrics](https://github.com/kubernetes-sigs/controller-runtime/blob/1ed345090869edc4bd94fe220386cb7fa5df745f/pkg/internal/controller/metrics/metrics.go).
 Controller-runtime metrics provide foundational metrics for understanding the performance and health of your controller.
 
+### **`rest_client_rate_limiter_duration_seconds`**
+
+This histogram measures time spent in the Kubernetes client's local rate limiter for each attempted request. A request is
+sent when the wait succeeds, or abandoned if its context expires while waiting. The metric uses the Kubernetes-standard
+buckets and is partitioned by request `verb` and API server `host`.
+
+The rate of the histogram sum measures aggregate time spent waiting, in seconds per second:
+
+```promql
+sum by (verb, host) (rate(rest_client_rate_limiter_duration_seconds_sum[5m]))
+```
+
+The average wait per request can be calculated from the histogram's sum and count:
+
+```promql
+sum by (verb, host) (rate(rest_client_rate_limiter_duration_seconds_sum[5m]))
+/
+sum by (verb, host) (rate(rest_client_rate_limiter_duration_seconds_count[5m]))
+```
+
+This signal reflects client-side throttling. API server responses, including HTTP 429 responses, are counted separately in
+`rest_client_requests_total`.
+
 ## SDK Metrics
 
 The Achilles SDK provides additional metrics that leverage SDK conventions and structures to provide more detailed
