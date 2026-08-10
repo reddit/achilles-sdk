@@ -1,6 +1,8 @@
 package claim
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -146,6 +148,51 @@ var _ = Describe("Claim Controller", Ordered, func() {
 			Eventually(func(g Gomega) {
 				g.Expect(c.Get(ctx, claim.Spec.ClaimedRef.ObjectKey(), claimed)).ToNot(HaveOccurred())
 				g.Expect(claimed.DeletionTimestamp).ToNot(BeNil())
+			}).Should(Succeed())
+		})
+	})
+
+	It("should not bind a claim that is suspended before it binds", func() {
+		suspendedClaim := &v1alpha1.TestClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-claim-suspended",
+				Namespace: "default",
+				Labels: map[string]string{
+					"infrared.reddit.com/suspend": "true",
+				},
+			},
+			Spec: v1alpha1.TestClaimSpec{
+				TestField: "test-field",
+			},
+		}
+		Expect(c.Create(ctx, suspendedClaim)).To(Succeed())
+
+		By("leaving the claim unbound, unfinalized, and without a claimed object", func() {
+			Consistently(func(g Gomega) {
+				actualClaim := &v1alpha1.TestClaim{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(suspendedClaim), actualClaim)).ToNot(HaveOccurred())
+				g.Expect(actualClaim.Spec.ClaimedRef).To(BeNil())
+				g.Expect(actualClaim.GetFinalizers()).ToNot(ContainElement("cloud.infrared.reddit.com/claim"))
+			}, 2*time.Second, 200*time.Millisecond).Should(Succeed())
+		})
+
+		By("binding once the suspend label is removed", func() {
+			Eventually(func(g Gomega) {
+				actualClaim := &v1alpha1.TestClaim{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(suspendedClaim), actualClaim)).ToNot(HaveOccurred())
+				delete(actualClaim.Labels, "infrared.reddit.com/suspend")
+				g.Expect(c.Update(ctx, actualClaim)).ToNot(HaveOccurred())
+			}).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				actualClaim := &v1alpha1.TestClaim{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(suspendedClaim), actualClaim)).ToNot(HaveOccurred())
+				g.Expect(actualClaim.Spec.ClaimedRef).ToNot(BeNil())
+				g.Expect(actualClaim.GetFinalizers()).To(ContainElement("cloud.infrared.reddit.com/claim"))
+
+				claimed := &v1alpha1.TestClaimed{}
+				g.Expect(c.Get(ctx, actualClaim.Spec.ClaimedRef.ObjectKey(), claimed)).ToNot(HaveOccurred())
+				g.Expect(meta.HasSuspendLabel(claimed)).To(BeFalse())
 			}).Should(Succeed())
 		})
 	})

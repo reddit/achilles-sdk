@@ -59,12 +59,16 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 	}
 
 	claimed := Claimed(new(T))
+	claimedExists := false
 	if ref := claim.GetClaimedRef(); ref != nil {
 		// claim already bound, populate resource fields for future use
 		claimed.SetName(ref.Name)
-		if err := r.Client.Get(ctx, ref.ObjectKey(), claimed); err != nil && !k8serrors.IsNotFound(err) {
+		err := r.Client.Get(ctx, ref.ObjectKey(), claimed)
+		if err != nil && !k8serrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("fetching %T %q: %w", claimed, ref.Name, err)
 		}
+		// NotFound means the claim is bound to a claimed object that no longer (or does not yet) exist
+		claimedExists = err == nil
 	} else {
 		// this is a fresh claim, generate a resource name.
 		//
@@ -89,8 +93,33 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 		return ctrl.Result{}, fmt.Errorf("%w. got=%s, expected=%s", errClaimedRefMismatch, claimed.GetClaimRef(), claimRef)
 	}
 
-	// NOTE: only delete claimed object if claim is deleted and not suspended
-	if meta.WasDeleted(claim) && !meta.HasSuspendLabel(claim) {
+	// Handle suspension, propagate suspend label to the claimed object and skip all other logic.
+	// A suspended claim is therefore never bound, finalized, or deleted.
+	if meta.HasSuspendLabel(claim) {
+		// only propagate to an existing claimed object, suspension must not create one
+		if claimedExists {
+			// copy the suspended label
+			labels := map[string]string{}
+			if claimed.GetLabels() != nil {
+				labels = claimed.GetLabels()
+			}
+
+			labels[meta.SuspendKey] = "true"
+			claimed.SetLabels(labels)
+
+			if err := r.Client.Applicator.Apply(ctx, claimed, io.AsUpdate()); err != nil {
+				return ctrl.Result{}, fmt.Errorf("propagating suspend label to claimed: %w", err)
+			}
+		}
+
+		return ctrl.Result{}, nil
+	} else if meta.HasSuspendLabel(claimed) {
+		// remove suspend label from claimed object if not present on claim,
+		// persisted by the update applied further below
+		delete(claimed.GetLabels(), meta.SuspendKey)
+	}
+
+	if meta.WasDeleted(claim) {
 		if r.beforeDelete != nil {
 			if err := r.beforeDelete(claim, claimed); err != nil {
 				claim.SetConditions(api.Deleting().WithMessage(err.Error()))
@@ -101,14 +130,14 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 			}
 		}
 
-		if meta.WasCreated(claimed) {
+		if claimedExists {
 			if err := r.Client.Delete(ctx, claimed, client.PropagationPolicy(metav1.DeletePropagationForeground)); k8serrors.IsNotFound(err) {
 				return ctrl.Result{}, nil
 			} else if err != nil {
 				return ctrl.Result{}, fmt.Errorf("deleting claimed: %w", err)
 			}
 		} else {
-			// remove finalizer, we're ready to delete
+			// remove finalizer, we're ready to delete the claim
 			if err := meta.RemoveFinalizer(ctx, r.Client.Client, claim, finalizer); err != nil && !k8serrors.IsNotFound(err) {
 				return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 			}
@@ -133,20 +162,6 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 	// ensure the state of the claimed resource
 	meta.SetRedditLabels(claimed, r.Name)
 	claimed.SetClaimRef(claimRef)
-
-	// NOTE: propagate suspend label to the claimed object
-	if meta.HasSuspendLabel(claim) {
-		// copy the suspended label
-		labels := map[string]string{}
-		if claimed.GetLabels() != nil {
-			labels = claimed.GetLabels()
-		}
-
-		labels[meta.SuspendKey] = "true"
-		claimed.SetLabels(labels)
-	} else if meta.HasSuspendLabel(claimed) {
-		delete(claimed.GetLabels(), meta.SuspendKey)
-	}
 
 	// update operation is needed to ensure suspend label is deleted from claimed object
 	if err := r.Client.Applicator.Apply(ctx, claimed, io.AsUpdate()); err != nil {

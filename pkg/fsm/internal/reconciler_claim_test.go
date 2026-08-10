@@ -55,7 +55,8 @@ func TestReconciler_Claim(t *testing.T) {
 			},
 			out: []client.Object{
 				apply(newTestClaim(), withFinalizer, withGeneratedClaimRef),
-				apply(&v1alpha1.TestClaimed{}, withGeneratedName, withRedditLabels, withClaimRef),
+				apply(&v1alpha1.TestClaimed{}, withGeneratedName, withRedditLabels, withClaimRef,
+					withCreatedTimestamp[*v1alpha1.TestClaimed]),
 			},
 		},
 		{
@@ -89,6 +90,72 @@ func TestReconciler_Claim(t *testing.T) {
 			},
 			missing: []client.Object{
 				newTestClaim(),
+			},
+		},
+		{
+			// a claim can be finalized before spec.claimedRef is persisted, so deleting it must still
+			// remove the finalizer rather than trying to delete a claimed object that was never created
+			name: "success/removes_finalizer_when_never_bound",
+			in: []client.Object{
+				apply(newTestClaim(), withFinalizer, withDeletedTimestamp[*v1alpha1.TestClaim]),
+			},
+			missing: []client.Object{
+				newTestClaim(),
+			},
+		},
+		{
+			name: "success/removes_suspend_label_from_claimed",
+			in: []client.Object{
+				apply(newTestClaim(), withFinalizer, withGeneratedClaimRef),
+				apply(&v1alpha1.TestClaimed{}, withGeneratedName, withClaimRef, withSuspendLabel[*v1alpha1.TestClaimed]),
+			},
+			out: []client.Object{
+				apply(newTestClaim(), withFinalizer, withGeneratedClaimRef),
+				apply(&v1alpha1.TestClaimed{}, withGeneratedName, withRedditLabels, withClaimRef),
+			},
+		},
+		{
+			// while suspended the reconciler propagates the suspend label and skips everything else,
+			// so the claimed object does not gain the reddit labels the full loop would have applied
+			name: "suspend/propagates_label_to_claimed",
+			in: []client.Object{
+				apply(newTestClaim(), withFinalizer, withGeneratedClaimRef, withSuspendLabel[*v1alpha1.TestClaim]),
+				apply(&v1alpha1.TestClaimed{}, withGeneratedName, withClaimRef, withCreatedTimestamp[*v1alpha1.TestClaimed]),
+			},
+			out: []client.Object{
+				apply(newTestClaim(), withFinalizer, withGeneratedClaimRef, withSuspendLabel[*v1alpha1.TestClaim]),
+				apply(&v1alpha1.TestClaimed{}, withGeneratedName, withClaimRef, withCreatedTimestamp[*v1alpha1.TestClaimed],
+					withSuspendLabel[*v1alpha1.TestClaimed]),
+			},
+		},
+		{
+			// a claim suspended before it ever bound must not be finalized or bound, and must not
+			// create a claimed object
+			name: "suspend/does_not_bind_fresh_claim",
+			in: []client.Object{
+				apply(newTestClaim(), withSuspendLabel[*v1alpha1.TestClaim]),
+			},
+			out: []client.Object{
+				apply(newTestClaim(), withSuspendLabel[*v1alpha1.TestClaim]),
+			},
+			missing: []client.Object{
+				apply(&v1alpha1.TestClaimed{}, withGeneratedName),
+			},
+		},
+		{
+			// deleting a suspended claim leaves it terminating: the claimed object is not deleted and
+			// the finalizer is not removed
+			name: "suspend/skips_delete",
+			in: []client.Object{
+				apply(newTestClaim(), withFinalizer, withGeneratedClaimRef, withSuspendLabel[*v1alpha1.TestClaim],
+					withDeletedTimestamp[*v1alpha1.TestClaim]),
+				apply(&v1alpha1.TestClaimed{}, withGeneratedName, withClaimRef, withCreatedTimestamp[*v1alpha1.TestClaimed]),
+			},
+			out: []client.Object{
+				apply(newTestClaim(), withFinalizer, withGeneratedClaimRef, withSuspendLabel[*v1alpha1.TestClaim],
+					withDeletedTimestamp[*v1alpha1.TestClaim]),
+				apply(&v1alpha1.TestClaimed{}, withGeneratedName, withClaimRef, withCreatedTimestamp[*v1alpha1.TestClaimed],
+					withSuspendLabel[*v1alpha1.TestClaimed]),
 			},
 		},
 		{
@@ -195,6 +262,15 @@ func withDeletedTimestamp[T client.Object](t T) {
 	t.SetDeletionTimestamp(&now)
 }
 
+func withSuspendLabel[T client.Object](t T) {
+	labels := t.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[meta.SuspendKey] = "true"
+	t.SetLabels(labels)
+}
+
 func withCreatedTimestamp[T client.Object](t T) {
 	t.SetCreationTimestamp(now)
 }
@@ -228,9 +304,16 @@ func testApplicator(c client.Client) *io.ClientApplicator {
 	}
 }
 
-func generateNameClientFilter(_ string, obj client.Object) error {
+// generateNameClientFilter emulates the apiserver's create behavior: a name is generated from
+// generateName and creationTimestamp is stamped. Stamping the timestamp matters because the reconciler
+// reserves a claimed name via a dry run create, so a claimed object that does not exist still comes
+// back looking created.
+func generateNameClientFilter(event string, obj client.Object) error {
 	if gn := obj.GetGenerateName(); gn != "" {
 		obj.SetName(gn + "abcde")
+	}
+	if createdAt := obj.GetCreationTimestamp(); event == "create" && createdAt.IsZero() {
+		obj.SetCreationTimestamp(now)
 	}
 	return nil
 }
