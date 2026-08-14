@@ -44,12 +44,15 @@ type BeforeDelete[
 	T any, Claimed apitypes.ClaimedType[T], U any, Claim apitypes.ClaimType[U],
 ] func(Claim, Claimed) error
 
-func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, err error) {
 	requestId := ctrlcontroller.ReconcileIDFromContext(ctx)
 	log := r.Log.With("request", req, "requestId", requestId)
 	log.Debug("entering reconcile")
 	startedAt := time.Now()
 	defer func() { log.Debugf("finished reconcile in %s", time.Since(startedAt)) }()
+	defer func() {
+		res, err = ignoreErrorsAfterContextDone(ctx, log, res, err)
+	}()
 
 	claim := Claim(new(U))
 	if err := r.Client.Get(ctx, req.NamespacedName, claim); k8serrors.IsNotFound(err) {

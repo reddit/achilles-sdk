@@ -89,14 +89,17 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	log.Debug("entering reconcile")
 	startedAt := time.Now()
 	defer func() { log.Debugf("finished reconcile in %s", time.Since(startedAt)) }()
+	defer func() {
+		res, err = ignoreErrorsAfterContextDone(ctx, log, res, err)
+	}()
 
 	// record metrics
 	defer func() {
 		// fetch the object's latest state
 		obj := Obj(new(T))
 		if err := r.client.Get(ctx, req.NamespacedName, obj); err != nil {
-			if !k8serrors.IsNotFound(err) {
-				log.Error("fetching object for recording metrics: %w", err)
+			if !k8serrors.IsNotFound(err) && ctx.Err() == nil {
+				log.Errorf("fetching object for recording metrics: %s", err)
 			}
 			return
 		}
@@ -157,6 +160,27 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return result.Get(log)
+}
+
+// When the controller is shut down, it cancels the context of every in-progress Reconcile(). This fails every
+// reconciler's outstanding API requests with an error like "client rate limiter Wait returned an error: context canceled".
+// These errors are expected and cannot be acted upon. Ignore them instead of returning an error.
+func ignoreErrorsAfterContextDone(
+	ctx context.Context,
+	log *zap.SugaredLogger,
+	res ctrl.Result,
+	err error,
+) (ctrl.Result, error) {
+	// If there is no error, continue as normal
+	if err == nil || ctx.Err() == nil {
+		return res, err
+	}
+
+	// The context was Canceled or DeadlineExceeded
+	log.Debugf("aborting reconcile, context is done: %s", err)
+	// Return an empty result and a nil error to prevent controller-runtime from counting the reconcile as a failure and
+	// requeueing the work
+	return ctrl.Result{}, nil
 }
 
 // reconcile the object through a sequence of FSM states

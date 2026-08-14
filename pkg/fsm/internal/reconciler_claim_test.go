@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/reddit/achilles-sdk-api/api"
@@ -32,6 +33,8 @@ const (
 var (
 	now    = metav1.NewTime(time.Now().Round(time.Second))
 	scheme = internalscheme.MustNewScheme()
+
+	errGet = errors.New("get failed")
 )
 
 func init() {
@@ -221,6 +224,74 @@ func TestReconciler_Claim(t *testing.T) {
 					cmpopts.IgnoreTypes(metav1.TypeMeta{})); diff != "" {
 					t.Errorf("object differs from expected: (-got +want)\n%s", diff)
 				}
+			}
+		})
+	}
+}
+
+// TestReconciler_Claim_ContextDone asserts that errors encountered after the reconcile context is done are not
+// surfaced as reconcile errors.
+func TestReconciler_Claim_ContextDone(t *testing.T) {
+	cases := []struct {
+		name      string
+		cancelCtx bool
+		wantErr   error
+	}{
+		{
+			name:    "surfaces_get_errors",
+			wantErr: errGet,
+		},
+		{
+			name:      "ignores_errors_once_context_is_done",
+			cancelCtx: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancelCtx {
+				cancel()
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(newTestClaim()).
+				Build()
+
+			// mimic the API client, which fails all requests once their context is done
+			c := interceptor.NewClient(fakeClient, interceptor.Funcs{
+				Get: func(
+					ctx context.Context,
+					_ client.WithWatch,
+					_ client.ObjectKey,
+					_ client.Object,
+					_ ...client.GetOption,
+				) error {
+					if err := ctx.Err(); err != nil {
+						return fmt.Errorf("client rate limiter Wait returned an error: %w", err)
+					}
+					return errGet
+				},
+			})
+
+			r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, testApplicator(c), scheme, zaptest.NewLogger(t).Sugar(), nil)
+
+			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: testClaimName}})
+
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("expected no error, got: %s", err)
+				}
+				if !res.IsZero() {
+					t.Errorf("expected an empty result, got: %+v", res)
+				}
+				return
+			}
+
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error running reconciler did not match expected\ngot: %v\nwant: %s", err, tc.wantErr)
 			}
 		})
 	}
