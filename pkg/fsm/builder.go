@@ -64,6 +64,7 @@ type Builder[T any, Obj apitypes.FSMResource[T]] struct {
 	opts                    []buildOption
 	maxConcurrentReconciles int
 	reconcilerOptions       fsmtypes.ReconcilerOptions[T, Obj]
+	forObserveOptions       fsmhandler.ForObservePredicateOptions
 
 	// skipNameValidation is used to skip name validation for the controller,
 	// should only be used for testing purposes.
@@ -158,6 +159,13 @@ func (b *Builder[T, Obj]) WithReconcilerOptions(reconcilerOptions fsmtypes.Recon
 // controller-runtime ensures a single object is not reconciled by multiple reconcilers concurrently. If your controller manages global state (e.g. caches attached to the controller struct), you need to ensure it is thread safe before increasing the concurrency.
 func (b *Builder[T, Obj]) WithMaxConcurrentReconciles(maxConcurrentReconciles int) *Builder[T, Obj] {
 	b.maxConcurrentReconciles = maxConcurrentReconciles
+	return b
+}
+
+// WithIgnoreStatusOnlySelfUpdates ignores primary object update events that
+// only change status, resourceVersion, or managedFields.
+func (b *Builder[T, Obj]) WithIgnoreStatusOnlySelfUpdates() *Builder[T, Obj] {
+	b.forObserveOptions.IgnoreStatusOnlyUpdates = true
 	return b
 }
 
@@ -285,7 +293,7 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 				MaxConcurrentReconciles: b.maxConcurrentReconciles,
 			}).
 			// equivalent to calling `builder.For` but uses an event handler that debug logs the event trigger
-			For(b.obj, ctrlbuilder.WithPredicates(fsmhandler.NewForObservePredicate(log, scheme, name, metrics)))
+			For(b.obj, ctrlbuilder.WithPredicates(fsmhandler.NewForObservePredicate(log, scheme, name, metrics, b.forObserveOptions)))
 
 		// watch managed types
 		for _, managedType := range b.managedTypes {
