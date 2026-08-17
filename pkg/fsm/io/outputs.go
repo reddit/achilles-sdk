@@ -72,7 +72,7 @@ func applyManagedResourceRefs[T any, Obj apitypes.FSMResource[T]](
 		// verify that managed object exists, emit warning if not
 		managedObj, err := meta.NewObjectForGVK(scheme, ref.GroupVersionKind())
 		if err != nil {
-			return fmt.Errorf("constructing new %T %s: %w", managedObj, client.ObjectKeyFromObject(managedObj), err)
+			return fmt.Errorf("constructing managed resource %s: %w", ref.GroupVersionKind(), err)
 		}
 		managedObj.SetName(ref.Name)
 		managedObj.SetNamespace(ref.Namespace)
