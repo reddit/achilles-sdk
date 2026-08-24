@@ -251,6 +251,23 @@ func (r *Sink) RecordSuspend(
 	).Set(value)
 }
 
+// DeleteSuspend deletes the suspend metric for the specified object.
+// Returns true if a metric was deleted.
+func (r *Sink) DeleteSuspend(
+	ref client.ObjectKey,
+	gvk schema.GroupVersionKind,
+) bool {
+	return r.suspendGauge.DeleteLabelValues(
+		suspendGaugeLabel{
+			group:     gvk.Group,
+			version:   gvk.Version,
+			kind:      gvk.Kind,
+			name:      ref.Name,
+			namespace: ref.Namespace,
+		}.values()...,
+	)
+}
+
 // RecordProcessingDuration records the time taken to process an object of a given metadata.generation.
 func (r *Sink) RecordProcessingDuration(
 	gvk schema.GroupVersionKind,

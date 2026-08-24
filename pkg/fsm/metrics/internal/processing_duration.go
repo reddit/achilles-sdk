@@ -105,6 +105,36 @@ func (p *ProcessingStartTimes) DeleteRange(name string, namespace string, observ
 	}
 }
 
+// DeleteAll deletes all processing start times for the given (name, namespace), regardless of generation.
+func (p *ProcessingStartTimes) DeleteAll(name string, namespace string) {
+	p.m.Lock()
+	defer p.m.Unlock()
+
+	// all entries for a given (namespace, name) are contiguous in the tree, and generation 0 is a
+	// lower bound (metadata.generation starts at 1), so ascending from generation 0 and stopping at
+	// the first non-matching entry visits exactly the entries for this object
+	key := requestStartTime{
+		Namespace:  namespace,
+		Name:       name,
+		Generation: 0,
+	}
+
+	var items []requestStartTime
+	// accumulate items to delete to avoid mutating tree while iterating
+	p.startTimes.AscendGreaterOrEqual(key, func(item requestStartTime) bool {
+		if item.Name != key.Name || item.Namespace != key.Namespace {
+			// end of range for (name, namespace)
+			return false
+		}
+		items = append(items, item)
+		return true
+	})
+	// delete all matched items from the tree
+	for _, item := range items {
+		p.startTimes.Delete(item)
+	}
+}
+
 // Set sets the processing start time for the given request if it is earlier than the current one.
 // Items with the same key can be queued multiple times, but we care about the first time that a request was encountered.
 func (p *ProcessingStartTimes) Set(name string, namespace string, observedGeneration int64, startTime time.Time) {
