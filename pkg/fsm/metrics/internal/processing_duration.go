@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -25,13 +24,17 @@ type requestStartTime struct {
 	Failed bool
 }
 
-func (r requestStartTime) key() string {
-	return fmt.Sprintf("%s/%s/%d", r.Namespace, r.Name, r.Generation)
-}
-
+// less orders by (namespace, name, generation), with generation compared numerically —
+// a lexicographic comparison would order generation 9 after generation 10, breaking the
+// range semantics of GetRange/DeleteRange/SetRangeFailed across decimal digit-length boundaries.
 func less(req1, req2 requestStartTime) bool {
-	// compare namespace, name, and generation
-	return req1.key() < req2.key()
+	if req1.Namespace != req2.Namespace {
+		return req1.Namespace < req2.Namespace
+	}
+	if req1.Name != req2.Name {
+		return req1.Name < req2.Name
+	}
+	return req1.Generation < req2.Generation
 }
 
 func NewProcessingStartTimes() *ProcessingStartTimes {

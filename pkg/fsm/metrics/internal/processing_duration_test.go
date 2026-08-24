@@ -505,6 +505,32 @@ func Test_ProcessingStartTimes_DeleteAll(t *testing.T) {
 	}
 }
 
+// Regression test: generations must compare numerically, not lexicographically. With string
+// comparison, generation 9 sorts after generation 10, so GetRange/DeleteRange at
+// observedGeneration 10 would silently skip (and retain forever) the generation 9 entry.
+func Test_ProcessingStartTimes_GenerationOrdering(t *testing.T) {
+	gen9Time := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	gen10Time := time.Date(2000, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	newTree := func() *ProcessingStartTimes {
+		p := NewProcessingStartTimes()
+		p.startTimes.ReplaceOrInsert(requestStartTime{Namespace: "ns", Name: "bbb", Generation: 9, Time: gen9Time})
+		p.startTimes.ReplaceOrInsert(requestStartTime{Namespace: "ns", Name: "bbb", Generation: 10, Time: gen10Time})
+		return p
+	}
+
+	t.Run("GetRange includes generations across decimal digit-length boundaries", func(t *testing.T) {
+		got := newTree().GetRange("bbb", "ns", 10, true)
+		assert.ElementsMatch(t, []time.Time{gen9Time, gen10Time}, got)
+	})
+
+	t.Run("DeleteRange deletes generations across decimal digit-length boundaries", func(t *testing.T) {
+		p := newTree()
+		p.DeleteRange("bbb", "ns", 10)
+		assert.Equal(t, 0, p.startTimes.Len())
+	})
+}
+
 func Test_ProcessingStartTimes_SetRangeFailed(t *testing.T) {
 	tests := []struct {
 		name         string
