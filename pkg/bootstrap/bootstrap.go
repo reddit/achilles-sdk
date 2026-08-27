@@ -62,6 +62,18 @@ type Options struct {
 	// Issue tracking sync periods per controller: https://github.com/reddit/achilles-sdk/issues/171
 	SyncPeriod time.Duration
 
+	// Cache configures the manager's client cache. It has no corresponding CLI flag and must be
+	// set programmatically.
+	//
+	// Use Cache.ByObject (or Cache.DefaultNamespaces, Cache.DefaultLabelSelector, etc.) to scope
+	// the informers backing the manager's cached client. Without scoping, a controller that
+	// watches or manages a high-cardinality built-in type (e.g. Pods) caches every such object
+	// in the cluster, which makes the controller's memory footprint proportional to cluster size
+	// rather than to the set of objects it manages.
+	//
+	// Cache.SyncPeriod, when nil, is defaulted from the SyncPeriod flag.
+	Cache cache.Options
+
 	// Determines whether the controller should use leader election (a form of active-passive HA).
 	LeaderElection bool
 
@@ -158,12 +170,10 @@ func buildManager(
 	mgr, err := manager.New(
 		cfg,
 		manager.Options{
-			HealthProbeBindAddress: opts.HealthAddr,
-			Metrics:                server.Options{BindAddress: opts.MetricsAddr},
-			Logger:                 zapr.NewLogger(log.Desugar()),
-			Cache: cache.Options{
-				SyncPeriod: &opts.SyncPeriod,
-			},
+			HealthProbeBindAddress:  opts.HealthAddr,
+			Metrics:                 server.Options{BindAddress: opts.MetricsAddr},
+			Logger:                  zapr.NewLogger(log.Desugar()),
+			Cache:                   cacheOptions(opts),
 			LeaderElection:          opts.LeaderElection,
 			LeaderElectionID:        opts.LeaderElectionID,
 			LeaderElectionNamespace: opts.LeaderElectionNamespace,
@@ -189,6 +199,16 @@ func buildManager(
 		}
 	}
 	return mgr, nil
+}
+
+// cacheOptions returns the configured cache options with SyncPeriod defaulted
+// from the flag-provided value when not set programmatically.
+func cacheOptions(o *Options) cache.Options {
+	cacheOpts := o.Cache
+	if cacheOpts.SyncPeriod == nil {
+		cacheOpts.SyncPeriod = &o.SyncPeriod
+	}
+	return cacheOpts
 }
 
 func buildRestConfig(o *Options) (*rest.Config, error) {
