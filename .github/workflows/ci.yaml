@@ -13,6 +13,12 @@ jobs:
       matrix:
         go-version:
           - "1.24"
+        controller-runtime:
+          # "pinned" tests against the versions in go.mod; explicit versions
+          # verify compatibility with newer controller-runtime releases that
+          # consumers may resolve to via MVS.
+          - pinned
+          - v0.22.5
 
     container:
       image: golang:${{ matrix.go-version }}
@@ -27,6 +33,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Generate
+        if: matrix.controller-runtime == 'pinned'
         run: |
           # needed for running `tar -xJv` for installing shellcheck
           apt-get update
@@ -42,6 +49,12 @@ jobs:
           git status
           git diff
           test -z "$(git status --porcelain)"
+
+      - name: Upgrade controller-runtime
+        if: matrix.controller-runtime != 'pinned'
+        run: |
+          go get sigs.k8s.io/controller-runtime@${{ matrix.controller-runtime }}
+          go mod tidy
 
       - name: Test
         run: make test
