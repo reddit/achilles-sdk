@@ -24,6 +24,7 @@ import (
 var _ = Describe("Controller", Ordered, func() {
 	var preconditionNamespace *corev1.Namespace
 	var testClaim *testv1alpha1.TestClaim
+	var firstReadyAt time.Time
 
 	var finalizerConfigMapNames = []string{
 		"finalizer-child-1",
@@ -110,6 +111,24 @@ var _ = Describe("Controller", Ordered, func() {
 		}).Should(Succeed())
 	})
 
+	It("should persist and export the first Ready transition", func() {
+		Eventually(func(g Gomega) {
+			actual := &testv1alpha1.TestClaim{}
+			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(testClaim), actual)).To(Succeed())
+			g.Expect(status.ResourceReady(actual)).To(BeTrue())
+			var err error
+			firstReadyAt, err = time.Parse(time.RFC3339Nano, actual.Annotations[meta.FirstReadyAtKey])
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(firstReadyAt.Equal(actual.GetCondition(api.TypeReady).LastTransitionTime.Time)).To(BeTrue())
+			metric, err := getMetric("achilles_resource_first_ready_timestamp_seconds", map[string]string{
+				"group": testv1alpha1.Group, "version": testv1alpha1.Version, "kind": testv1alpha1.TestClaimKind,
+				"name": testClaim.Name, "namespace": testClaim.Namespace,
+			})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(metric.GetGauge().GetValue()).To(Equal(float64(firstReadyAt.Unix())))
+		}).Should(Succeed())
+	})
+
 	It("should have the observed generation updated to the latest generation post-reconcile", func() {
 		initialGeneration := testClaim.Generation
 
@@ -156,6 +175,7 @@ var _ = Describe("Controller", Ordered, func() {
 			g.Expect(status.ResourceReady(actualClaim)).To(BeTrue())
 			readyCondition := actualClaim.GetCondition(api.TypeReady)
 			g.Expect(readyCondition.ObservedGeneration).To(Equal(actualClaim.GetGeneration()))
+			g.Expect(actualClaim.Annotations[meta.FirstReadyAtKey]).To(Equal(firstReadyAt.Format(time.RFC3339Nano)))
 		}).Should(Succeed())
 	})
 
@@ -737,19 +757,21 @@ var _ = Describe("Controller", Ordered, func() {
 			g.Expect(err).To(MatchError("achilles_trigger metric does not exist"))
 		}).Should(Succeed())
 
-		Eventually(func(g Gomega) {
-			_, err := getMetric("achilles_object_suspended", map[string]string{
-				"group":     testv1alpha1.Group,
-				"version":   testv1alpha1.Version,
-				"kind":      testv1alpha1.TestClaimKind,
-				"name":      testClaim.Name,
-				"namespace": testClaim.Namespace,
-			})
-			// other objects may keep the metric family alive, so match on either the family-level
-			// or series-level absence error
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(err.Error()).To(ContainSubstring("does not exist"))
-		}).Should(Succeed())
+		for _, metricName := range []string{"achilles_object_suspended", "achilles_resource_first_ready_timestamp_seconds"} {
+			Eventually(func(g Gomega) {
+				_, err := getMetric(metricName, map[string]string{
+					"group":     testv1alpha1.Group,
+					"version":   testv1alpha1.Version,
+					"kind":      testv1alpha1.TestClaimKind,
+					"name":      testClaim.Name,
+					"namespace": testClaim.Namespace,
+				})
+				// other objects may keep the metric family alive, so match on either the family-level
+				// or series-level absence error
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(err.Error()).To(ContainSubstring("does not exist"))
+			}).Should(Succeed())
+		}
 	})
 
 	It("should handle automatic creation of objects when enabled", func() {

@@ -112,7 +112,7 @@ func (c stateDurationHistogramLabel) values() []string {
 	}
 }
 
-type suspendGaugeLabel struct {
+type resourceGaugeLabel struct {
 	group     string
 	version   string
 	kind      string
@@ -120,7 +120,7 @@ type suspendGaugeLabel struct {
 	namespace string
 }
 
-func (c suspendGaugeLabel) names() []string {
+func (c resourceGaugeLabel) names() []string {
 	return []string{
 		"group",
 		"version",
@@ -130,7 +130,7 @@ func (c suspendGaugeLabel) names() []string {
 	}
 }
 
-func (c suspendGaugeLabel) values() []string {
+func (c resourceGaugeLabel) values() []string {
 	return []string{
 		c.group,
 		c.version,

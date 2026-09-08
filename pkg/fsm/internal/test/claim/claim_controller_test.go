@@ -74,6 +74,40 @@ var _ = Describe("Claim Controller", Ordered, func() {
 		})
 	})
 
+	It("should persist and export separate first-ready timestamps for claim and claimed", func() {
+		Eventually(func(g Gomega) {
+			claim := &v1alpha1.TestClaim{}
+			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(testClaim), claim)).To(Succeed())
+			g.Expect(claim.GetClaimedRef()).NotTo(BeNil())
+			claimed := &v1alpha1.TestClaimed{}
+			g.Expect(c.Get(ctx, claim.GetClaimedRef().ObjectKey(), claimed)).To(Succeed())
+			families, err := reg.Gather()
+			g.Expect(err).NotTo(HaveOccurred())
+			for _, obj := range []client.Object{claim, claimed} {
+				readyAt, err := time.Parse(time.RFC3339Nano, obj.GetAnnotations()[meta.FirstReadyAtKey])
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(readyAt.Equal(obj.(api.Conditioned).GetCondition(api.TypeReady).LastTransitionTime.Time)).To(BeTrue())
+				found := false
+				for _, family := range families {
+					if family.GetName() != "achilles_resource_first_ready_timestamp_seconds" {
+						continue
+					}
+					for _, metric := range family.Metric {
+						labels := map[string]string{}
+						for _, label := range metric.Label {
+							labels[label.GetName()] = label.GetValue()
+						}
+						if labels["kind"] == meta.MustGVKForObject(obj, scheme).Kind && labels["name"] == obj.GetName() && labels["namespace"] == obj.GetNamespace() {
+							found = true
+							g.Expect(metric.GetGauge().GetValue()).To(Equal(float64(readyAt.Unix())))
+						}
+					}
+				}
+				g.Expect(found).To(BeTrue(), "missing first-ready metric for %T", obj)
+			}
+		}).Should(Succeed())
+	})
+
 	It("should handle suspend label is set", func() {
 		By("copying the suspend label to claimed object", func() {
 			claim := &v1alpha1.TestClaim{}
