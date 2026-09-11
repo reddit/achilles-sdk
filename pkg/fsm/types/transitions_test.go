@@ -391,3 +391,28 @@ func Test_ErrorResultf(t *testing.T) {
 		})
 	}
 }
+
+func TestReadManagedResources_UnknownGVKReturnsError(t *testing.T) {
+	scheme, err := intscheme.NewScheme()
+	assert.NoError(t, err)
+
+	parent := &testv1alpha1.TestClaimed{
+		Status: testv1alpha1.TestClaimedStatus{
+			Resources: []api.TypedObjectRef{{
+				Group:   "example.com",
+				Version: "v1",
+				Kind:    "Unregistered",
+				Name:    "child",
+			}},
+		},
+	}
+
+	_, err = readManagedResources(
+		context.Background(),
+		fake.NewClientBuilder().WithScheme(scheme).Build(),
+		scheme,
+		parent,
+	)
+
+	assert.ErrorContains(t, err, "constructing managed resource example.com/v1, Kind=Unregistered")
+}
