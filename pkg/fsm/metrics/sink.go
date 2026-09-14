@@ -21,6 +21,7 @@ const (
 // Sink is a prometheus metrics sink for standard achilles metrics.
 type Sink struct {
 	readinessGauge              *prometheus.GaugeVec
+	firstReadyGauge             *prometheus.GaugeVec
 	triggerCounter              *prometheus.CounterVec
 	stateDurationHistogram      *prometheus.HistogramVec
 	suspendGauge                *prometheus.GaugeVec
@@ -37,6 +38,13 @@ func NewSink() *Sink {
 				Help: "The status condition of type \"Ready\" for an Achilles resource.",
 			},
 			conditionGaugeLabel{}.names(),
+		),
+		firstReadyGauge: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "achilles_resource_first_ready_timestamp_seconds",
+				Help: "Unix timestamp in seconds of the first observed Ready transition for an Achilles resource.",
+			},
+			resourceGaugeLabel{}.names(),
 		),
 		triggerCounter: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -58,7 +66,7 @@ func NewSink() *Sink {
 				Name: "achilles_object_suspended",
 				Help: "Gauge reporting whether the object is suspended or not",
 			},
-			suspendGaugeLabel{}.names(),
+			resourceGaugeLabel{}.names(),
 		),
 		processingDurationHistogram: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -83,6 +91,7 @@ func NewSink() *Sink {
 // Reset resets all metrics.
 func (r *Sink) Reset() {
 	r.readinessGauge.Reset()
+	r.firstReadyGauge.Reset()
 	r.triggerCounter.Reset()
 	r.stateDurationHistogram.Reset()
 	r.suspendGauge.Reset()
@@ -94,6 +103,7 @@ func (r *Sink) Reset() {
 func (r *Sink) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		r.readinessGauge,
+		r.firstReadyGauge,
 		r.triggerCounter,
 		r.stateDurationHistogram,
 		r.suspendGauge,
@@ -241,7 +251,7 @@ func (r *Sink) RecordSuspend(
 		value = 1
 	}
 	r.suspendGauge.WithLabelValues(
-		suspendGaugeLabel{
+		resourceGaugeLabel{
 			group:     gvk.Group,
 			version:   gvk.Version,
 			kind:      gvk.Kind,
@@ -258,7 +268,7 @@ func (r *Sink) DeleteSuspend(
 	gvk schema.GroupVersionKind,
 ) bool {
 	return r.suspendGauge.DeleteLabelValues(
-		suspendGaugeLabel{
+		resourceGaugeLabel{
 			group:     gvk.Group,
 			version:   gvk.Version,
 			kind:      gvk.Kind,
@@ -266,6 +276,22 @@ func (r *Sink) DeleteSuspend(
 			namespace: ref.Namespace,
 		}.values()...,
 	)
+}
+
+// RecordFirstReady records the persisted first-ready timestamp for the specified object.
+func (r *Sink) RecordFirstReady(ref client.ObjectKey, gvk schema.GroupVersionKind, readyAt time.Time) {
+	r.firstReadyGauge.WithLabelValues(resourceGaugeLabel{
+		group: gvk.Group, version: gvk.Version, kind: gvk.Kind,
+		name: ref.Name, namespace: ref.Namespace,
+	}.values()...).Set(float64(readyAt.Unix()) + float64(readyAt.Nanosecond())/1e9)
+}
+
+// DeleteFirstReady deletes the first-ready timestamp metric for the specified object.
+func (r *Sink) DeleteFirstReady(ref client.ObjectKey, gvk schema.GroupVersionKind) bool {
+	return r.firstReadyGauge.DeleteLabelValues(resourceGaugeLabel{
+		group: gvk.Group, version: gvk.Version, kind: gvk.Kind,
+		name: ref.Name, namespace: ref.Namespace,
+	}.values()...)
 }
 
 // RecordProcessingDuration records the time taken to process an object of a given metadata.generation.

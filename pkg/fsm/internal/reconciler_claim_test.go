@@ -181,7 +181,7 @@ func TestReconciler_Claim(t *testing.T) {
 
 			c := testApplicator(fakeClient)
 
-			r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, c, scheme, log, nil)
+			r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, c, scheme, log, nil, nil)
 
 			ctx := context.Background()
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: testClaimName}}

@@ -73,6 +73,30 @@ func MustMakeMetricsWithOptions(scheme *runtime.Scheme, registrar prometheus.Reg
 	}
 }
 
+// IsMetricEnabled reports whether this recorder has a sink and the metric is enabled.
+// A nil or zero-value recorder has no enabled metrics.
+func (m *Metrics) IsMetricEnabled(metric types.AchillesMetrics) bool {
+	return m != nil && m.sink != nil && !m.options.IsMetricDisabled(metric)
+}
+
+// RecordFirstReady records an object's persisted first-ready timestamp.
+func (m *Metrics) RecordFirstReady(obj client.Object, readyAt time.Time) {
+	if !m.IsMetricEnabled(types.AchillesResourceFirstReady) {
+		return
+	}
+	ref := meta.MustTypedObjectRefFromObject(obj, m.scheme)
+	m.sink.RecordFirstReady(ref.ObjectKey(), ref.GroupVersionKind(), readyAt)
+}
+
+// DeleteFirstReady removes an object's first-ready series, even if recording is disabled.
+func (m *Metrics) DeleteFirstReady(obj client.Object) {
+	if m == nil || m.sink == nil {
+		return
+	}
+	ref := meta.MustTypedObjectRefFromObject(obj, m.scheme)
+	m.sink.DeleteFirstReady(ref.ObjectKey(), ref.GroupVersionKind())
+}
+
 // InitializeForGVK initializes metrics for the given GVK.
 // NOTE: this is not thread-safe, but should only be called in synchronous code in application start up.
 func (m *Metrics) InitializeForGVK(gvk schema.GroupVersionKind) {

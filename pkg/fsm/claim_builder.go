@@ -177,7 +177,7 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 
 		// claim reconciler
 		claimName := meta.MustGVKForObject(b.claim, scheme).Kind
-		claimReconciler := internal.NewClaimReconciler(b.obj, b.claim, c, scheme, log, b.beforeDelete)
+		claimReconciler := internal.NewClaimReconciler(b.obj, b.claim, c, scheme, log, b.beforeDelete, metrics)
 		if err := ctrl.NewControllerManagedBy(mgr).
 			Named(claimName).
 			WithOptions(controller.Options{

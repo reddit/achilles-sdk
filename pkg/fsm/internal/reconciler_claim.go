@@ -17,6 +17,8 @@ import (
 
 	"github.com/reddit/achilles-sdk-api/api"
 	apitypes "github.com/reddit/achilles-sdk-api/pkg/types"
+	"github.com/reddit/achilles-sdk/pkg/fsm/metrics"
+	"github.com/reddit/achilles-sdk/pkg/fsm/types"
 	"github.com/reddit/achilles-sdk/pkg/io"
 	"github.com/reddit/achilles-sdk/pkg/meta"
 	"github.com/reddit/achilles-sdk/pkg/status"
@@ -38,24 +40,51 @@ type ClaimReconciler[T any, Claimed apitypes.ClaimedType[T], U any, Claim apityp
 	Name string
 	// Hook to run before deleting claimed resource.
 	beforeDelete BeforeDelete[T, Claimed, U, Claim]
+	metrics      *metrics.Metrics
 }
 
 type BeforeDelete[
 	T any, Claimed apitypes.ClaimedType[T], U any, Claim apitypes.ClaimType[U],
 ] func(Claim, Claimed) error
 
-func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, err error) {
 	requestId := ctrlcontroller.ReconcileIDFromContext(ctx)
 	log := r.Log.With("request", req, "requestId", requestId)
 	log.Debug("entering reconcile")
 	startedAt := time.Now()
 	defer func() { log.Debugf("finished reconcile in %s", time.Since(startedAt)) }()
+	defer func() {
+		if !r.metrics.IsMetricEnabled(types.AchillesResourceFirstReady) {
+			return
+		}
+		latest := Claim(new(U))
+		if getErr := r.Client.Get(ctx, req.NamespacedName, latest); getErr != nil {
+			if k8serrors.IsNotFound(getErr) {
+				latest.SetName(req.Name)
+				latest.SetNamespace(req.Namespace)
+				r.metrics.DeleteFirstReady(latest)
+			} else {
+				err = errors.Join(err, fmt.Errorf("fetching claim for first-ready metric: %w", getErr))
+			}
+			return
+		}
+		if observeErr := observeFirstReady(ctx, r.Client.Client, latest, r.metrics, log); observeErr != nil {
+			err = errors.Join(err, observeErr)
+		}
+	}()
 
 	claim := Claim(new(U))
 	if err := r.Client.Get(ctx, req.NamespacedName, claim); k8serrors.IsNotFound(err) {
+		claim.SetName(req.Name)
+		claim.SetNamespace(req.Namespace)
+		r.metrics.DeleteFirstReady(claim)
 		return ctrl.Result{}, nil
 	} else if err != nil {
 		return ctrl.Result{}, fmt.Errorf("fetching %T %q: %w", claim, req.NamespacedName, err)
+	}
+
+	if err := observeFirstReady(ctx, r.Client.Client, claim, r.metrics, log); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	claimed := Claimed(new(T))
@@ -196,6 +225,7 @@ func NewClaimReconciler[T any, Claimed apitypes.ClaimedType[T], U any, Claim api
 	scheme *runtime.Scheme,
 	log *zap.SugaredLogger,
 	beforeDelete BeforeDelete[T, Claimed, U, Claim],
+	recorder *metrics.Metrics,
 ) ClaimReconciler[T, Claimed, U, Claim] {
 	gvk := meta.MustGVKForObject(claim, scheme)
 
@@ -205,5 +235,6 @@ func NewClaimReconciler[T any, Claimed apitypes.ClaimedType[T], U any, Claim api
 		Scheme:       scheme,
 		Log:          log.Named(gvk.Kind),
 		beforeDelete: beforeDelete,
+		metrics:      recorder,
 	}
 }

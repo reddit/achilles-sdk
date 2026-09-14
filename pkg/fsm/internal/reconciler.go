@@ -94,9 +94,16 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	defer func() {
 		// fetch the object's latest state
 		obj := Obj(new(T))
-		if err := r.client.Get(ctx, req.NamespacedName, obj); err != nil {
-			if !k8serrors.IsNotFound(err) {
-				log.Error("fetching object for recording metrics: %w", err)
+		if getErr := r.client.Get(ctx, req.NamespacedName, obj); getErr != nil {
+			if k8serrors.IsNotFound(getErr) {
+				obj.SetName(req.Name)
+				obj.SetNamespace(req.Namespace)
+				r.metrics.DeleteFirstReady(obj)
+			} else {
+				log.Errorf("fetching object for recording metrics: %s", getErr)
+				if r.metrics.IsMetricEnabled(types.AchillesResourceFirstReady) {
+					err = errors.Join(err, fmt.Errorf("fetching object for first-ready metric: %w", getErr))
+				}
 			}
 			return
 		}
@@ -117,6 +124,10 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 
 		// record object readiness
 		r.metrics.RecordReadiness(obj)
+
+		if observeErr := observeFirstReady(ctx, r.client.Client, obj, r.metrics, log); observeErr != nil {
+			err = errors.Join(err, observeErr)
+		}
 	}()
 
 	obj, conditions, result := r.reconcile(ctx, req, log)
@@ -169,6 +180,10 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 	obj := Obj(new(T))
 	if err := r.client.Get(ctx, req.NamespacedName, obj); k8serrors.IsNotFound(err) {
 		// object not found, meaning that it has been deleted (not merely in terminating state)
+		obj.SetName(req.Name)
+		obj.SetNamespace(req.Namespace)
+		// Clear history even when this request immediately creates a replacement.
+		r.metrics.DeleteFirstReady(obj)
 
 		if r.reconcilerOptions.CreateIfNotFound {
 			obj := r.reconcilerOptions.CreateFunc(req)
@@ -189,8 +204,6 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 		// deregister metrics for deleted objects (to keep metrics cardinality count from monotonically increasing over an application's lifetime)
 		r.metrics.DeleteTrigger(req.NamespacedName, r.name)
 
-		obj.SetName(req.Name)
-		obj.SetNamespace(req.Namespace)
 		r.metrics.DeleteReadiness(obj)
 		r.metrics.DeleteEvent(obj)
 		r.metrics.DeleteSuspend(obj)
@@ -203,6 +216,11 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 		return nil, nil, types.DoneResult()
 	} else if err != nil {
 		return nil, nil, types.ErrorResult(fmt.Errorf("getting %T: %w", obj, err))
+	}
+
+	// Preserve existing readiness before FSM states can replace the Ready condition.
+	if err := observeFirstReady(ctx, r.client.Client, obj, r.metrics, log); err != nil {
+		return nil, nil, types.ErrorResult(err)
 	}
 
 	isSuspended := meta.HasSuspendLabel(obj)

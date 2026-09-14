@@ -33,6 +33,7 @@ var (
 	testEnv *test.TestEnv
 	c       client.Client
 	log     *zap.SugaredLogger
+	reg     *prometheus.Registry
 	scheme  = internalscheme.MustNewScheme()
 )
 
@@ -44,7 +45,7 @@ var _ = BeforeSuite(func() {
 	ctx = logging.NewContext(context.Background(), log)
 	rl := libratelimiter.NewDefaultProviderRateLimiter(libratelimiter.DefaultProviderRPS)
 
-	reg := prometheus.NewRegistry()
+	reg = prometheus.NewRegistry()
 	metrics := metrics.MustMakeMetrics(scheme, reg)
 
 	var err error

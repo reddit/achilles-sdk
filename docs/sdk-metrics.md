@@ -72,6 +72,54 @@ achilles_resource_readiness{
 } 1                                   // value of 1 means a status condition of the labelled status and type exists, 0 if it doesn't exist
 ```
 
+### **`achilles_resource_first_ready_timestamp_seconds`**
+
+This gauge exports the Unix timestamp in seconds of a resource's first observed Ready transition. It is enabled by
+default for FSM resources, including claimed resources, and for claims. Each resource uses its own `Ready` condition;
+arbitrary child resources are covered only if they also have an SDK reconciler.
+
+```c
+achilles_resource_first_ready_timestamp_seconds{
+  group="app.infrared.reddit.com",
+  version="v1alpha1",
+  kind="FederatedRedditNamespace",
+  name="demo-namespace-1",
+  namespace="",                       // empty for cluster-scoped resources
+} 1788265800
+```
+
+The SDK records `Ready.lastTransitionTime` when the persisted Ready condition is `True` and its `observedGeneration`
+matches the object's current generation. If the transition time is missing, it uses the observation time. The timestamp
+is stored in the SDK-owned annotation `infrared.reddit.com/first-ready-at` as UTC RFC3339, preserving available fractional
+seconds. No CRD schema changes are needed. The controller must be allowed to patch the resource's metadata.
+
+There is no series before the timestamp is recorded. Once persisted, the timestamp remains unchanged across generation
+changes, readiness changes, and controller restarts. The series is restored on reconciliation and continues to be exported
+while the object is unready, suspended, or terminating. Suspended and terminating objects without a timestamp are not
+initialized. The series is removed when the object is gone; a new object with the same name starts its own history.
+
+For objects that became ready before tracking began, the current qualifying Ready condition provides a best-effort
+estimate: it may describe a later transition or generation, not first-ever readiness. Objects without a qualifying Ready
+condition are initialized when one is subsequently observed. Status and annotation writes are separate operations, so
+transitions that disappear before tracking can persist them cannot be reconstructed.
+
+Annotation write failures are retried through reconciliation, and new timestamps are exported only after successful
+persistence. Malformed annotations are preserved, logged, and excluded from export. Applications and resource templates
+should preserve this annotation on existing objects and omit it when creating replacements.
+
+To disable both tracking and export, configure the shared metrics recorder (rather than the per-reconciler options):
+
+```golang
+recorder := metrics.MustMakeMetricsWithOptions(scheme, registry, fsmtypes.MetricsOptions{
+    DisableMetrics: []fsmtypes.AchillesMetrics{
+        fsmtypes.AchillesResourceFirstReady,
+    },
+})
+```
+
+Disabling tracking retains existing annotations. The option is independent of the readiness and custom-condition metric
+options. Time since first readiness can be queried with `time() - achilles_resource_first_ready_timestamp_seconds`.
+
 ### **`achilles_trigger`**
 
 This metric is a counter that provides insight into the events triggering your controller's reconcilers. It allows operators to reason
