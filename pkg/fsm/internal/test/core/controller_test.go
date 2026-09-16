@@ -736,6 +736,20 @@ var _ = Describe("Controller", Ordered, func() {
 			})
 			g.Expect(err).To(MatchError("achilles_trigger metric does not exist"))
 		}).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			_, err := getMetric("achilles_object_suspended", map[string]string{
+				"group":     testv1alpha1.Group,
+				"version":   testv1alpha1.Version,
+				"kind":      testv1alpha1.TestClaimKind,
+				"name":      testClaim.Name,
+				"namespace": testClaim.Namespace,
+			})
+			// other objects may keep the metric family alive, so match on either the family-level
+			// or series-level absence error
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("does not exist"))
+		}).Should(Succeed())
 	})
 
 	It("should handle automatic creation of objects when enabled", func() {

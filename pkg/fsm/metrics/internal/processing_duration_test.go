@@ -399,6 +399,138 @@ func Test_ProcessingStartTimes_DeleteRange(t *testing.T) {
 	}
 }
 
+func Test_ProcessingStartTimes_DeleteAll(t *testing.T) {
+	tests := []struct {
+		name         string
+		addItems     []requestStartTime
+		deleteAlls   []requestStartTime // executed after all adds; only Name and Namespace are used
+		expectedTree []requestStartTime
+	}{
+		{
+			name:     "no items with delete",
+			addItems: []requestStartTime{},
+			deleteAlls: []requestStartTime{
+				{
+					Name:      "aaa",
+					Namespace: "ns",
+				},
+			},
+			expectedTree: nil,
+		},
+		{
+			name: "deletes all generations, including across decimal digit-length boundaries",
+			addItems: []requestStartTime{
+				{
+					Name:       "bbb",
+					Namespace:  "ns",
+					Generation: 2,
+					Time:       time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
+				},
+				{
+					Name:       "bbb",
+					Namespace:  "ns",
+					Generation: 9,
+					Time:       time.Date(2000, 2, 1, 0, 0, 0, 0, time.UTC),
+				},
+				{
+					Name:       "bbb",
+					Namespace:  "ns",
+					Generation: 10,
+					Time:       time.Date(2000, 3, 1, 0, 0, 0, 0, time.UTC),
+				},
+				{
+					Name:       "bbb",
+					Namespace:  "ns",
+					Generation: 100,
+					Time:       time.Date(2000, 4, 1, 0, 0, 0, 0, time.UTC),
+				},
+				{
+					// prefix of "bbb", must not be deleted
+					Name:       "bb",
+					Namespace:  "ns",
+					Generation: 1,
+					Time:       time.Date(2000, 5, 1, 0, 0, 0, 0, time.UTC),
+				},
+				{
+					// different namespace, must not be deleted
+					Name:       "bbb",
+					Namespace:  "ns2",
+					Generation: 1,
+					Time:       time.Date(2000, 6, 1, 0, 0, 0, 0, time.UTC),
+				},
+			},
+			deleteAlls: []requestStartTime{
+				{
+					Name:      "bbb",
+					Namespace: "ns",
+				},
+			},
+			expectedTree: []requestStartTime{
+				{
+					Name:       "bb",
+					Namespace:  "ns",
+					Generation: 1,
+					Time:       time.Date(2000, 5, 1, 0, 0, 0, 0, time.UTC),
+				},
+				{
+					Name:       "bbb",
+					Namespace:  "ns2",
+					Generation: 1,
+					Time:       time.Date(2000, 6, 1, 0, 0, 0, 0, time.UTC),
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewProcessingStartTimes()
+
+			for _, item := range tc.addItems {
+				p.startTimes.ReplaceOrInsert(item)
+			}
+
+			for _, item := range tc.deleteAlls {
+				p.DeleteAll(item.Name, item.Namespace)
+			}
+
+			var got []requestStartTime
+			p.startTimes.Ascend(func(item requestStartTime) bool {
+				got = append(got, item)
+				return true
+			})
+
+			assert.ElementsMatch(t, tc.expectedTree, got)
+		})
+	}
+}
+
+// Regression test: generations must compare numerically, not lexicographically. With string
+// comparison, generation 9 sorts after generation 10, so GetRange/DeleteRange at
+// observedGeneration 10 would silently skip (and retain forever) the generation 9 entry.
+func Test_ProcessingStartTimes_GenerationOrdering(t *testing.T) {
+	gen9Time := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	gen10Time := time.Date(2000, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	newTree := func() *ProcessingStartTimes {
+		p := NewProcessingStartTimes()
+		p.startTimes.ReplaceOrInsert(requestStartTime{Namespace: "ns", Name: "bbb", Generation: 9, Time: gen9Time})
+		p.startTimes.ReplaceOrInsert(requestStartTime{Namespace: "ns", Name: "bbb", Generation: 10, Time: gen10Time})
+		return p
+	}
+
+	t.Run("GetRange includes generations across decimal digit-length boundaries", func(t *testing.T) {
+		got := newTree().GetRange("bbb", "ns", 10, true)
+		assert.ElementsMatch(t, []time.Time{gen9Time, gen10Time}, got)
+	})
+
+	t.Run("DeleteRange deletes generations across decimal digit-length boundaries", func(t *testing.T) {
+		p := newTree()
+		p.DeleteRange("bbb", "ns", 10)
+		assert.Equal(t, 0, p.startTimes.Len())
+	})
+}
+
 func Test_ProcessingStartTimes_SetRangeFailed(t *testing.T) {
 	tests := []struct {
 		name         string

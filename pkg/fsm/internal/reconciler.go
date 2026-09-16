@@ -193,6 +193,8 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 		obj.SetNamespace(req.Namespace)
 		r.metrics.DeleteReadiness(obj)
 		r.metrics.DeleteEvent(obj)
+		r.metrics.DeleteSuspend(obj)
+		r.metrics.DeleteProcessingStartTimes(obj)
 
 		for _, conditionType := range r.reconcilerOptions.MetricsOptions.ConditionTypes {
 			r.metrics.DeleteCondition(obj, conditionType)

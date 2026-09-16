@@ -31,6 +31,8 @@ type processingStartTimes interface {
 	SetRangeFailed(name string, namespace string, observedGeneration int64)
 	// DeleteRange deletes all processing start times for the given (name, namespace) where generation <= observedGeneration.
 	DeleteRange(name string, namespace string, observedGeneration int64)
+	// DeleteAll deletes all processing start times for the given (name, namespace), regardless of generation.
+	DeleteAll(name string, namespace string)
 }
 
 type Metrics struct {
@@ -177,6 +179,18 @@ func (m *Metrics) RecordSuspend(obj client.Object, suspend bool) {
 	m.sink.RecordSuspend(typedObjectRef.ObjectKey(), typedObjectRef.GroupVersionKind(), suspend)
 }
 
+// DeleteSuspend deletes the suspend metric for the given obj.
+// Unlike RecordSuspend, this is not gated on the metric being enabled — deleting is a no-op when
+// nothing was recorded, and an unconditional delete can never leave the gauge with stale series.
+func (m *Metrics) DeleteSuspend(obj client.Object) {
+	if m.sink == nil {
+		return
+	}
+
+	typedObjectRef := meta.MustTypedObjectRefFromObject(obj, m.scheme)
+	m.sink.DeleteSuspend(typedObjectRef.ObjectKey(), typedObjectRef.GroupVersionKind())
+}
+
 // RecordProcessingStart records the start time of processing for the given GVK and request.
 // This doesn't record a metric, but the start time is used to calculate the processing duration later.
 func (m *Metrics) RecordProcessingStart(
@@ -235,6 +249,20 @@ func (m *Metrics) RecordProcessingDuration(
 	}
 
 	return nil
+}
+
+// DeleteProcessingStartTimes deletes all recorded processing start times for the given obj.
+// This must be called when the object has been deleted from the server: RecordProcessingDuration
+// will never run for it again, so any remaining entries would be retained forever.
+func (m *Metrics) DeleteProcessingStartTimes(obj client.Object) {
+	gvk := meta.MustGVKForObject(obj, m.scheme)
+
+	processingStartTimes, ok := m.processingStartTimesByGVK[gvk]
+	if !ok {
+		return
+	}
+
+	processingStartTimes.DeleteAll(obj.GetName(), obj.GetNamespace())
 }
 
 // RecordEvent records a metric for an event for the given object.

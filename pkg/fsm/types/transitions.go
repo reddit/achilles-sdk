@@ -323,7 +323,8 @@ func readManagedResources(
 
 	for _, res := range parent.GetManagedResources() {
 		res := res // pike
-		managedObj, err := meta.NewObjectForGVK(scheme, res.GroupVersionKind())
+		gvk := res.GroupVersionKind()
+		managedObj, err := meta.NewObjectForGVK(scheme, gvk)
 		if err != nil {
 			return nil, fmt.Errorf("constructing new %T %s: %w", managedObj, client.ObjectKeyFromObject(managedObj), err)
 		}
@@ -335,6 +336,10 @@ func readManagedResources(
 			}
 			return nil, fmt.Errorf("getting managed resource %T %s: %w", managedObj, client.ObjectKeyFromObject(managedObj), err)
 		} else {
+			// Clients strip TypeMeta from typed objects on Get, so restore it for callers
+			// that rely on the object's GVK.
+			// See https://github.com/kubernetes-sigs/controller-runtime/issues/1517
+			managedObj.GetObjectKind().SetGroupVersionKind(gvk)
 			managedResources = append(managedResources, managedObj)
 		}
 	}

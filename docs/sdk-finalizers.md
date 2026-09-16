@@ -12,6 +12,10 @@ as long as the object is not being deleted. Once the object is being deleted (i.
 `finalizerState` provided by the controller. The finalizer will only be removed once the `finalizerState` returns a `types.DoneResult()`.
 Until the finalizer is removed, the object will not be deleted and the sdk will call the `finalizerState` on every reconcile.
 
+Finalizer additions and removals are patched with an optimistic lock and retried on conflict, so concurrent writers
+(such as the garbage collector managing `foregroundDeletion`) never have their finalizers clobbered. Removal treats an
+already-deleted object as success.
+
 Some examples of what the finalizerState can be used for are:
 1. Cleaning up state in remote systems like Vault (e.g. deleting all managed Vault entities)
 2. Deleting child Kubernetes objects in a particular order (i.e. deleting Crossplane InstanceProfiles before Roles due to a Crossplane limitation)
