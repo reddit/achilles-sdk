@@ -246,6 +246,10 @@ func buildRestConfig(o *Options) (*rest.Config, error) {
 		},
 	).ClientConfig()
 
+	if err != nil {
+		return nil, err
+	}
+
 	cfg.QPS = o.ClientQPS
 	cfg.Burst = o.ClientBurst
 

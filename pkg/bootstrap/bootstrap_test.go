@@ -24,6 +24,7 @@ var _ = DescribeTable("buildRestConfig should fail",
 	Entry("implicitly", false, "", errNoValidKubeContext),
 	Entry("when both inCluster and context are set",
 		true, "foo", errKubeContextSetInCluster),
+	Entry("nonexistent context", false, "foo", "context \"foo\" does not exist"),
 )
 
 var _ = Describe("cacheOptions", func() {
