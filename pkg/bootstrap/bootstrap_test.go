@@ -9,15 +9,16 @@ import (
 	"github.com/fgrosse/zaptest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/reddit/achilles-sdk/pkg/internal/tests"
-	testv1alpha1 "github.com/reddit/achilles-sdk/pkg/internal/tests/api/test/v1alpha1"
-	"github.com/reddit/achilles-sdk/pkg/logging"
-	"github.com/reddit/achilles-sdk/pkg/test"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/reddit/achilles-sdk/pkg/internal/tests"
+	testv1alpha1 "github.com/reddit/achilles-sdk/pkg/internal/tests/api/test/v1alpha1"
+	"github.com/reddit/achilles-sdk/pkg/logging"
+	"github.com/reddit/achilles-sdk/pkg/test"
 )
 
 var _ = DescribeTable("buildRestConfig should fail",
