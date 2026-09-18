@@ -167,6 +167,13 @@ func buildManager(
 	schemes runtime.SchemeBuilder,
 	opts *Options,
 ) (manager.Manager, error) {
+	scheme := runtime.NewScheme()
+	if schemes != nil {
+		if err := schemes.AddToScheme(scheme); err != nil {
+			return nil, fmt.Errorf("adding schemes: %w", err)
+		}
+	}
+
 	mgr, err := manager.New(
 		cfg,
 		manager.Options{
@@ -179,6 +186,7 @@ func buildManager(
 			LeaderElectionNamespace: opts.LeaderElectionNamespace,
 			RenewDeadline:           &opts.LeaderElectionRenewDeadline,
 			LeaseDuration:           &opts.LeaderElectionLeaseDuration,
+			Scheme:                  scheme,
 		},
 	)
 	if err != nil {
@@ -191,12 +199,6 @@ func buildManager(
 
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		return nil, fmt.Errorf("adding readyz: %w", err)
-	}
-
-	if schemes != nil {
-		if err := schemes.AddToScheme(mgr.GetScheme()); err != nil {
-			return nil, err
-		}
 	}
 	return mgr, nil
 }

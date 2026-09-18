@@ -1,15 +1,24 @@
 package bootstrap
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/fgrosse/zaptest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/reddit/achilles-sdk/pkg/internal/tests"
+	testv1alpha1 "github.com/reddit/achilles-sdk/pkg/internal/tests/api/test/v1alpha1"
+	"github.com/reddit/achilles-sdk/pkg/logging"
+	"github.com/reddit/achilles-sdk/pkg/test"
 )
 
 var _ = DescribeTable("buildRestConfig should fail",
@@ -58,6 +67,35 @@ var _ = Describe("cacheOptions", func() {
 		cacheOpts := cacheOptions(opts)
 		Expect(cacheOpts.ByObject).To(HaveKeyWithValue(&corev1.Pod{}, cache.ByObject{Label: selector}))
 		Expect(cacheOpts.SyncPeriod).To(HaveValue(Equal(5 * time.Hour)))
+	})
+
+})
+var _ = Describe("buildManager", func() {
+	It("allows ByObject configuration of custom types", func(gctx context.Context) {
+		log := zaptest.LoggerWriter(GinkgoWriter).Sugar()
+		ctx := logging.NewContext(gctx, log)
+
+		testEnv, err := test.NewEnvTestBuilder(ctx).
+			WithCRDDirectoryPaths([]string{
+				filepath.Join(tests.RootDir(), "pkg", "internal", "tests", "cluster", "crd", "bases"),
+			}).
+			WithLog(log.Desugar()).
+			Start()
+		Expect(err).ToNot(HaveOccurred())
+		defer func() { Expect(testEnv.Stop()).To(Succeed()) }()
+
+		schemes := runtime.SchemeBuilder{}
+		schemes.Register(testv1alpha1.AddToScheme)
+		opts := &Options{
+			Cache: cache.Options{
+				ByObject: map[client.Object]cache.ByObject{
+					&testv1alpha1.TestClaim{}: {},
+				},
+			},
+		}
+
+		_, err = buildManager(testEnv.Cfg, log, schemes, opts)
+		Expect(err).NotTo(HaveOccurred())
 	})
 })
 
