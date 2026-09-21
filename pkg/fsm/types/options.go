@@ -37,6 +37,8 @@ func (a AchillesMetrics) String() string {
 const (
 	// AchillesResourceReadiness represents if the resource is ready or not.
 	AchillesResourceReadiness = "ResourceReadiness"
+	// AchillesResourceFirstReady tracks and exports the first observed Ready transition time.
+	AchillesResourceFirstReady = "ResourceFirstReady"
 	// AchillesResourceTrigger trigger for the resource.
 	AchillesResourceTrigger = "ResourceTrigger"
 	// AchillesResourceCondition condition of the resource see api.ConditionType.
