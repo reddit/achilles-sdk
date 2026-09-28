@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -168,6 +169,11 @@ func buildManager(
 	opts *Options,
 ) (manager.Manager, error) {
 	scheme := runtime.NewScheme()
+	// Preserve controller-runtime's default built-in types while keeping caller
+	// registrations local to this manager and available during cache setup.
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("adding Kubernetes schemes: %w", err)
+	}
 	if schemes != nil {
 		if err := schemes.AddToScheme(scheme); err != nil {
 			return nil, fmt.Errorf("adding schemes: %w", err)

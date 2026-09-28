@@ -9,7 +9,9 @@ import (
 	"github.com/fgrosse/zaptest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -71,6 +73,29 @@ var _ = Describe("cacheOptions", func() {
 
 })
 var _ = Describe("buildManager", func() {
+	DescribeTable("preserves built-in Kubernetes types",
+		func(gctx context.Context, schemes runtime.SchemeBuilder) {
+			log := zaptest.LoggerWriter(GinkgoWriter).Sugar()
+			ctx := logging.NewContext(gctx, log)
+			testEnv, err := test.NewEnvTestBuilder(ctx).
+				WithLog(log.Desugar()).
+				Start()
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { Expect(testEnv.Stop()).To(Succeed()) }()
+
+			mgr, err := buildManager(testEnv.Cfg, log, schemes, &Options{})
+			Expect(err).NotTo(HaveOccurred())
+
+			// These reads must reach the API server, rather than fail locally
+			// because the manager's scheme cannot resolve built-in Go types.
+			Expect(mgr.GetAPIReader().Get(ctx, client.ObjectKey{Name: "default"}, &corev1.Namespace{})).To(Succeed())
+			err = mgr.GetAPIReader().Get(ctx, client.ObjectKey{Namespace: "default", Name: "missing"}, &appsv1.Deployment{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected an API NotFound response, got: %v", err)
+		},
+		Entry("without a caller scheme", nil),
+		Entry("with only custom types in the caller scheme", runtime.SchemeBuilder{testv1alpha1.AddToScheme}),
+	)
+
 	It("allows ByObject configuration of custom types", func(gctx context.Context) {
 		log := zaptest.LoggerWriter(GinkgoWriter).Sugar()
 		ctx := logging.NewContext(gctx, log)
