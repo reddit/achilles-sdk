@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"reflect"
+
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -24,6 +26,14 @@ type ForObservePredicate struct {
 	scheme         *runtime.Scheme
 	controllerName string
 	metrics        *metrics.Metrics
+	options        ForObservePredicateOptions
+}
+
+// ForObservePredicateOptions configures primary object update handling.
+type ForObservePredicateOptions struct {
+	// IgnoreStatusOnlyUpdates ignores primary object updates that only change
+	// status, resourceVersion, or managedFields.
+	IgnoreStatusOnlyUpdates bool
 }
 
 // NewForObservePredicate returns a new ForObservePredicate that uses the
@@ -33,12 +43,19 @@ func NewForObservePredicate(
 	scheme *runtime.Scheme,
 	controllerName string,
 	metrics *metrics.Metrics,
+	options ...ForObservePredicateOptions,
 ) *ForObservePredicate {
+	var opts ForObservePredicateOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+
 	return &ForObservePredicate{
 		log:            log,
 		scheme:         scheme,
 		controllerName: controllerName,
 		metrics:        metrics,
+		options:        opts,
 	}
 }
 
@@ -48,6 +65,9 @@ func (p *ForObservePredicate) Create(e event.CreateEvent) bool {
 }
 
 func (p *ForObservePredicate) Update(e event.UpdateEvent) bool {
+	if p.options.IgnoreStatusOnlyUpdates && !shouldObserveSelfUpdate(e.ObjectOld, e.ObjectNew) {
+		return false
+	}
 	p.observeEvent("update", e.ObjectNew)
 	return true
 }
@@ -60,6 +80,47 @@ func (p *ForObservePredicate) Delete(e event.DeleteEvent) bool {
 func (p *ForObservePredicate) Generic(e event.GenericEvent) bool {
 	p.observeEvent("generic", e.Object)
 	return true
+}
+
+func shouldObserveSelfUpdate(oldObj, newObj client.Object) bool {
+	if oldObj == nil || newObj == nil {
+		return true
+	}
+
+	if oldObj.GetGeneration() != newObj.GetGeneration() {
+		return true
+	}
+
+	if !deletionTimestampEqual(oldObj, newObj) {
+		return true
+	}
+
+	if !reflect.DeepEqual(oldObj.GetLabels(), newObj.GetLabels()) {
+		return true
+	}
+
+	if !reflect.DeepEqual(oldObj.GetAnnotations(), newObj.GetAnnotations()) {
+		return true
+	}
+
+	if !reflect.DeepEqual(oldObj.GetFinalizers(), newObj.GetFinalizers()) {
+		return true
+	}
+
+	if !reflect.DeepEqual(oldObj.GetOwnerReferences(), newObj.GetOwnerReferences()) {
+		return true
+	}
+
+	return false
+}
+
+func deletionTimestampEqual(oldObj, newObj client.Object) bool {
+	oldTimestamp := oldObj.GetDeletionTimestamp()
+	newTimestamp := newObj.GetDeletionTimestamp()
+	if oldTimestamp == nil || newTimestamp == nil {
+		return oldTimestamp == newTimestamp
+	}
+	return oldTimestamp.Equal(newTimestamp)
 }
 
 // logs an event trigger
