@@ -90,15 +90,20 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	startedAt := time.Now()
 	defer func() { log.Debugf("finished reconcile in %s", time.Since(startedAt)) }()
 
+	var persistedObj Obj
 	// record metrics
 	defer func() {
-		// fetch the object's latest state
-		obj := Obj(new(T))
-		if err := r.client.Get(ctx, req.NamespacedName, obj); err != nil {
-			if !k8serrors.IsNotFound(err) {
-				log.Error("fetching object for recording metrics: %w", err)
+		obj := persistedObj
+		if obj == nil {
+			// If status was not written, fetch the object's current state. A cached
+			// read immediately after ApplyStatus can still have the old conditions.
+			obj = Obj(new(T))
+			if err := r.client.Get(ctx, req.NamespacedName, obj); err != nil {
+				if !k8serrors.IsNotFound(err) {
+					log.Error("fetching object for recording metrics: %w", err)
+				}
+				return
 			}
-			return
 		}
 
 		// record status condition metric for custom condition types
@@ -142,6 +147,9 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 			}
 			return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 		}
+		// Record the conditions that were successfully persisted, even if the
+		// informer cache has not observed the status update yet.
+		persistedObj = obj
 	}
 
 	// For FSMs with finalizer states, remove finalizer when finalizer states have been completed.
