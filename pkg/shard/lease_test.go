@@ -101,6 +101,20 @@ func TestClaimAllowsSameShardPeer(t *testing.T) {
 	assert.Equal(t, "self-pod", *lease.Spec.HolderIdentity, "the incoming pod takes over the shard's lease")
 }
 
+// Readable IDs can collide: "key in (not,0,1)" and "key notin (0,1)" both render as "not-0-1".
+// Treating that as the same shard would silently disable the check, so the selector decides.
+func TestClaimFailsOnSameIDWithDifferentSelector(t *testing.T) {
+	c := testClient(peerLease("test-controller-shard-not-0-1", "not-0-1",
+		"shard.infrared.reddit.com/key in (not,0,1)", time.Second))
+	a, err := advertiser(c, "shard.infrared.reddit.com/key notin (0,1)")
+	require.NoError(t, err)
+	require.Equal(t, "not-0-1", a.cfg.Shard.ID(), "precondition: the IDs collide")
+
+	err = a.Claim(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "different selector")
+}
+
 func TestClaimIgnoresStalePeer(t *testing.T) {
 	c := testClient(peerLease("peer", "h123", "shard.infrared.reddit.com/key in (a,b)", time.Hour))
 	a, err := advertiser(c, "shard.infrared.reddit.com/key=a")

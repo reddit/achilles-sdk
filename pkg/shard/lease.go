@@ -100,15 +100,25 @@ func (a *Advertiser) verify(ctx context.Context) error {
 	}
 
 	for _, lease := range leases.Items {
-		// Pods of our own shard are expected during a rolling update.
-		if lease.Labels[IDLabelKey] == a.cfg.Shard.ID() {
-			continue
-		}
 		if expired(&lease) {
 			continue
 		}
 
 		raw := lease.Annotations[SelectorAnnotationKey]
+
+		if lease.Labels[IDLabelKey] == a.cfg.Shard.ID() {
+			// Pods of our own shard are expected during a rolling update, but only if they really
+			// are our shard. A matching ID with a different selector means two distinct shards are
+			// colliding on one identity, which would otherwise silently disable this check.
+			if raw != a.cfg.Shard.String() {
+				return fmt.Errorf(
+					"shard %q is already claimed with a different selector %q (held by %q): refusing to start",
+					a.cfg.Shard.ID(), raw, holder(&lease),
+				)
+			}
+			continue
+		}
+
 		peer, err := Parse(a.cfg.Shard.Key(), raw)
 		if err != nil || peer == nil {
 			// An unparseable advertisement is not evidence of a conflict, but it does mean some

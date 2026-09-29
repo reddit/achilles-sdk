@@ -83,15 +83,15 @@ func (s *Shard) Requirements() labels.Requirements {
 }
 
 // ID is a stable, DNS-1123-safe identifier for the shard, used to name the resources that must be
-// unique per shard (the leader election lock and the shard's advertisement Lease). Selectors that
-// name a single value use it verbatim so those resources stay recognizable; anything more complex
-// is hashed, since it has no short readable form.
+// unique per shard (the leader election lock and the shard's advertisement Lease).
+//
+// Equivalent selectors always yield the same ID, since it is derived from the matched value set
+// rather than from how the selector was written. Readability is worth some effort here because
+// these names are what an operator sees when debugging, so the ID spells the value set out when it
+// has a short DNS-safe rendering and falls back to a hash only when it does not.
 func (s *Shard) ID() string {
-	if s.values.onlyAbsent() {
-		return catchAllID
-	}
-	if v, ok := s.values.single(); ok && len(validation.IsDNS1123Label(v)) == 0 {
-		return v
+	if readable, ok := s.values.readable(); ok {
+		return readable
 	}
 
 	sum := sha256.Sum256([]byte(s.values.canonical()))
@@ -189,28 +189,45 @@ func (v valueSet) empty() bool {
 	return !v.absent && v.finite && len(v.values) == 0
 }
 
-func (v valueSet) onlyAbsent() bool {
-	return v.absent && v.finite && len(v.values) == 0
-}
+// maxReadableIDLength keeps a spelled-out ID well inside the 63-character DNS label limit, leaving
+// room for the prefixes callers add.
+const maxReadableIDLength = 40
 
-func (v valueSet) single() (string, bool) {
-	if v.absent || !v.finite || len(v.values) != 1 {
+// readable renders the set as a short name, reporting false when no safe short form exists.
+func (v valueSet) readable() (string, bool) {
+	sorted := v.sortedValues()
+
+	var candidate string
+	switch {
+	case v.absent && v.finite && len(sorted) == 0: // matches only unlabelled objects
+		return catchAllID, true
+	case v.absent && v.finite: // unreachable via the selector grammar, but do not guess
+		return "", false
+	case !v.finite && len(sorted) == 0: // any value, i.e. the key merely exists
+		candidate = "any"
+	case !v.finite:
+		candidate = "not-" + strings.Join(sorted, "-")
+	default:
+		candidate = strings.Join(sorted, "-")
+	}
+
+	if candidate == "" || len(candidate) > maxReadableIDLength || len(validation.IsDNS1123Label(candidate)) > 0 {
 		return "", false
 	}
-	for k := range v.values {
-		return k, true
-	}
-	return "", false
+	return candidate, true
 }
 
-// canonical renders the set so that equivalent selectors hash identically regardless of how they
-// were written.
-func (v valueSet) canonical() string {
+func (v valueSet) sortedValues() []string {
 	sorted := make([]string, 0, len(v.values))
 	for k := range v.values {
 		sorted = append(sorted, k)
 	}
 	sort.Strings(sorted)
+	return sorted
+}
 
-	return fmt.Sprintf("absent=%t;finite=%t;values=%s", v.absent, v.finite, strings.Join(sorted, ","))
+// canonical renders the set so that equivalent selectors hash identically regardless of how they
+// were written.
+func (v valueSet) canonical() string {
+	return fmt.Sprintf("absent=%t;finite=%t;values=%s", v.absent, v.finite, strings.Join(v.sortedValues(), ","))
 }

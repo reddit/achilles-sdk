@@ -68,6 +68,12 @@ Because every requirement must reference the one shard key, overlap is an exact 
 rather than a conservative guess. And because the check keys on shard identity rather than on the
 mere presence of a peer, a rolling update of the same shard passes cleanly.
 
+Each shard gets a short identifier derived from the values its selector matches, which names the
+Lease and the leader election lock. It spells the value set out where it can, so
+`key in (0,1)` becomes `0-1`, `key notin (0,1)` becomes `not-0-1`, and `!key` becomes `catchall`;
+anything without a short DNS-safe rendering falls back to a hash. Distinct selectors can render to
+the same identifier, so a peer holding your identifier with a *different* selector is also refused.
+
 Two consequences worth knowing:
 
 - The check records what a process is *running*, so it cannot see a peer that crashed before

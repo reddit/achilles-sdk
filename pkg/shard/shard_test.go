@@ -44,9 +44,12 @@ func TestID(t *testing.T) {
 		"single value is used verbatim": {"shard.infrared.reddit.com/key=shard1", "shard1"},
 		"single value via in":           {"shard.infrared.reddit.com/key in (shard1)", "shard1"},
 		"catch-all":                     {"!shard.infrared.reddit.com/key", "catchall"},
-		"value set is hashed":           {"shard.infrared.reddit.com/key in (a,b)", "h"},
-		"negation is hashed":            {"shard.infrared.reddit.com/key notin (a)", "h"},
+		"value set is spelled out":      {"shard.infrared.reddit.com/key in (a,b)", "a-b"},
+		"tier split":                    {"shard.infrared.reddit.com/key in (0,1)", "0-1"},
+		"negation is spelled out":       {"shard.infrared.reddit.com/key notin (0,1)", "not-0-1"},
+		"exists":                        {"shard.infrared.reddit.com/key", "any"},
 		"non-dns-safe value is hashed":  {"shard.infrared.reddit.com/key=Shard_1", "h"},
+		"long value set is hashed":      {"shard.infrared.reddit.com/key in (aaaaaaaaaa,bbbbbbbbbb,cccccccccc,dddddddddd,eeeeeeeeee)", "h"},
 	}
 
 	for name, tc := range tests {
@@ -78,6 +81,8 @@ func TestIDIsDNSSafe(t *testing.T) {
 		"shard.infrared.reddit.com/key=shard1",
 		"!shard.infrared.reddit.com/key",
 		"shard.infrared.reddit.com/key in (a,b)",
+		"shard.infrared.reddit.com/key notin (0,1)",
+		"shard.infrared.reddit.com/key",
 		"shard.infrared.reddit.com/key=Shard_1",
 	} {
 		s, err := Parse(DefaultKey, raw)
