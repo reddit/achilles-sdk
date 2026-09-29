@@ -19,6 +19,7 @@ import (
 	apitypes "github.com/reddit/achilles-sdk-api/pkg/types"
 	"github.com/reddit/achilles-sdk/pkg/io"
 	"github.com/reddit/achilles-sdk/pkg/meta"
+	"github.com/reddit/achilles-sdk/pkg/shard"
 	"github.com/reddit/achilles-sdk/pkg/status"
 )
 
@@ -161,6 +162,8 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 
 	// ensure the state of the claimed resource
 	meta.SetRedditLabels(claimed, r.Name)
+	// the claimed resource must land in the claim's shard, since the same instance reconciles both
+	shard.Propagate(claim, claimed)
 	claimed.SetClaimRef(claimRef)
 
 	// update operation is needed to ensure suspend label is deleted from claimed object

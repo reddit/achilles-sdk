@@ -52,6 +52,9 @@ documentation.
 * [Reconciler (FSM) Framework](docs/sdk-fsm-reconciler.md#fsm-reconciler)
     * Overview of how achilles-sdk works by offering a finite-state machine
       orchestrated with a Kubernetes reconciler.
+* [Sharding a controller](docs/sdk-sharding.md)
+    * Running several instances of one controller in a cluster, each owning a
+      mutually exclusive slice of the objects.
 
 ## How to Contribute
 1. Fork the repo.

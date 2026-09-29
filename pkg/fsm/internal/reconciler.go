@@ -25,6 +25,7 @@ import (
 	"github.com/reddit/achilles-sdk/pkg/fsm/types"
 	"github.com/reddit/achilles-sdk/pkg/io"
 	"github.com/reddit/achilles-sdk/pkg/meta"
+	"github.com/reddit/achilles-sdk/pkg/shard"
 	"github.com/reddit/achilles-sdk/pkg/status"
 )
 
@@ -346,6 +347,7 @@ func (r *fsmReconciler[T, Obj]) applyOutputs(
 			log.DPanicf("unrecognized output resource type %s, must be added to managed types", gvk)
 		}
 		meta.SetRedditLabels(res, r.name)
+		shard.Propagate(obj, res)
 	}
 	return fsmio.ApplyOutputSet(ctx, r.log, r.client, r.scheme, obj, outputSet)
 }

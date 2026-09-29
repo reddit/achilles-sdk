@@ -12,14 +12,17 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/reddit/achilles-sdk/pkg/internal/tests"
 	testv1alpha1 "github.com/reddit/achilles-sdk/pkg/internal/tests/api/test/v1alpha1"
 	"github.com/reddit/achilles-sdk/pkg/logging"
+	"github.com/reddit/achilles-sdk/pkg/shard"
 	"github.com/reddit/achilles-sdk/pkg/test"
 )
 
@@ -83,7 +86,7 @@ var _ = Describe("buildManager", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer func() { Expect(testEnv.Stop()).To(Succeed()) }()
 
-			mgr, err := buildManager(testEnv.Cfg, log, schemes, &Options{})
+			mgr, err := buildManager(testEnv.Cfg, log, schemes, &Options{}, nil)
 			Expect(err).NotTo(HaveOccurred())
 
 			// These reads must reach the API server, rather than fail locally
@@ -119,10 +122,72 @@ var _ = Describe("buildManager", func() {
 			},
 		}
 
-		_, err = buildManager(testEnv.Cfg, log, schemes, opts)
+		_, err = buildManager(testEnv.Cfg, log, schemes, opts, nil)
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("restricts a sharded type's informer to the shard's slice", func(gctx context.Context) {
+		log := zaptest.LoggerWriter(GinkgoWriter).Sugar()
+		ctx := logging.NewContext(gctx, log)
+
+		testEnv, err := test.NewEnvTestBuilder(ctx).
+			WithCRDDirectoryPaths([]string{
+				filepath.Join(tests.RootDir(), "pkg", "internal", "tests", "cluster", "crd", "bases"),
+			}).
+			WithScheme(testScheme()).
+			WithLog(log.Desugar()).
+			Start()
+		Expect(err).ToNot(HaveOccurred())
+		defer func() { Expect(testEnv.Stop()).To(Succeed()) }()
+
+		for name, shardValue := range map[string]string{"mine": "a", "theirs": "b"} {
+			Expect(testEnv.Client.Create(ctx, &testv1alpha1.TestClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    map[string]string{shard.DefaultKey: shardValue},
+				},
+			})).To(Succeed())
+		}
+
+		schemes := runtime.SchemeBuilder{testv1alpha1.AddToScheme}
+		mgr, err := buildManager(testEnv.Cfg, log, schemes, &Options{
+			ShardedTypes: []client.Object{&testv1alpha1.TestClaim{}},
+		}, mustParseShard("shard.infrared.reddit.com/key=a"))
+		Expect(err).NotTo(HaveOccurred())
+
+		mgrCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			defer GinkgoRecover()
+			Expect(mgr.GetCache().Start(mgrCtx)).To(Succeed())
+		}()
+		Expect(mgr.GetCache().WaitForCacheSync(mgrCtx)).To(BeTrue())
+
+		// The cached client, unlike the API reader, sees only what the informer holds.
+		var claims testv1alpha1.TestClaimList
+		Expect(mgr.GetClient().List(mgrCtx, &claims)).To(Succeed())
+
+		names := []string{}
+		for _, c := range claims.Items {
+			names = append(names, c.Name)
+		}
+		Expect(names).To(ConsistOf("mine"), "the other shard's objects must not reach this instance")
+	})
 })
+
+func mustParseShard(raw string) *shard.Shard {
+	s, err := shard.Parse(shard.DefaultKey, raw)
+	Expect(err).NotTo(HaveOccurred())
+	return s
+}
+
+func testScheme() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+	Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
+	Expect(testv1alpha1.AddToScheme(scheme)).To(Succeed())
+	return scheme
+}
 
 func TestBootstrap(t *testing.T) {
 	RegisterFailHandler(Fail)

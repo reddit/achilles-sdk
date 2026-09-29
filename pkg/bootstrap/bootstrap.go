@@ -16,12 +16,14 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	zaputil "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/reddit/achilles-sdk/pkg/logging"
+	"github.com/reddit/achilles-sdk/pkg/shard"
 )
 
 const (
@@ -75,6 +77,28 @@ type Options struct {
 	// Cache.SyncPeriod, when nil, is defaulted from the SyncPeriod flag.
 	Cache cache.Options
 
+	// WatchLabelSelector restricts this instance to one shard of the objects it would otherwise
+	// reconcile, letting several instances of the same controller run in a cluster over mutually
+	// exclusive slices. Empty disables sharding.
+	//
+	// Every requirement must reference shard.DefaultKey, e.g. "shard.infrared.reddit.com/key=a".
+	// Exactly one instance should run the negated form, "!shard.infrared.reddit.com/key", so that
+	// objects carrying no shard label are still reconciled by someone.
+	//
+	// Assigning the label to objects is the platform's responsibility. The SDK only reads it, and
+	// propagates it from a root object onto the children that object manages.
+	WatchLabelSelector string
+
+	// ShardedTypes are the root types whose informers WatchLabelSelector filters. It has no
+	// corresponding CLI flag and must be set programmatically. Required when WatchLabelSelector
+	// is set, since otherwise the selector would filter nothing.
+	ShardedTypes []client.Object
+
+	// DisableShardOverlapCheck skips the startup safeguard that refuses to run when another shard
+	// of this controller already claims an overlapping slice. Intended for running a controller
+	// out of cluster against a cluster that has live shards.
+	DisableShardOverlapCheck bool
+
 	// Determines whether the controller should use leader election (a form of active-passive HA).
 	LeaderElection bool
 
@@ -117,6 +141,9 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 
 	flags.DurationVar(&o.SyncPeriod, "sync-period", 10*time.Hour, "Minimum frequency at which all controllers will perform a reconciliation.")
 
+	flags.StringVar(&o.WatchLabelSelector, "watch-label-selector", "", fmt.Sprintf("Restricts this instance to the objects matching the given selector, which must reference only %q. Use the negated form to own everything unlabeled. Empty disables sharding", shard.DefaultKey))
+	flags.BoolVar(&o.DisableShardOverlapCheck, "disable-shard-overlap-check", false, "Skips the startup check that refuses to run when another shard of this controller claims an overlapping slice")
+
 	flags.BoolVar(&o.LeaderElection, "leader-election", false, "Enables leader election for the controller (a form of active-passive HA)")
 	flags.StringVar(&o.LeaderElectionID, "leader-election-id", "", "Name of the resource that leader election will use for holding the leader lock")
 	flags.StringVar(&o.LeaderElectionNamespace, "leader-election-namespace", "", "Namespace in which the leader election resource will be created")
@@ -145,9 +172,21 @@ func Start(
 		return fmt.Errorf("building k8s client config: %w", err)
 	}
 
-	mgr, err := buildManager(cfg, log, schemes, opts)
+	shardCfg, err := resolveShard(opts)
+	if err != nil {
+		return fmt.Errorf("configuring sharding: %w", err)
+	}
+
+	mgr, err := buildManager(cfg, log, schemes, opts, shardCfg)
 	if err != nil {
 		return fmt.Errorf("building manager: %w", err)
+	}
+
+	// Before the manager starts, so an overlapping shard never reconciles anything.
+	if shardCfg != nil {
+		if err := setupSharding(ctx, cfg, mgr, opts, shardCfg, log); err != nil {
+			return fmt.Errorf("setting up sharding: %w", err)
+		}
 	}
 
 	if err := startFunc(ctx, mgr); err != nil {
@@ -167,6 +206,7 @@ func buildManager(
 	log *zap.SugaredLogger,
 	schemes runtime.SchemeBuilder,
 	opts *Options,
+	shardCfg *shard.Shard,
 ) (manager.Manager, error) {
 	scheme := runtime.NewScheme()
 	// Preserve controller-runtime's default built-in types while keeping caller
@@ -180,15 +220,20 @@ func buildManager(
 		}
 	}
 
+	cacheOpts, err := applyShardToCache(cacheOptions(opts), scheme, shardCfg, opts.ShardedTypes)
+	if err != nil {
+		return nil, fmt.Errorf("scoping cache to shard: %w", err)
+	}
+
 	mgr, err := manager.New(
 		cfg,
 		manager.Options{
 			HealthProbeBindAddress:  opts.HealthAddr,
 			Metrics:                 server.Options{BindAddress: opts.MetricsAddr},
 			Logger:                  zapr.NewLogger(log.Desugar()),
-			Cache:                   cacheOptions(opts),
+			Cache:                   cacheOpts,
 			LeaderElection:          opts.LeaderElection,
-			LeaderElectionID:        opts.LeaderElectionID,
+			LeaderElectionID:        shardedLeaderElectionID(opts.LeaderElectionID, shardCfg),
 			LeaderElectionNamespace: opts.LeaderElectionNamespace,
 			RenewDeadline:           &opts.LeaderElectionRenewDeadline,
 			LeaseDuration:           &opts.LeaderElectionLeaseDuration,
