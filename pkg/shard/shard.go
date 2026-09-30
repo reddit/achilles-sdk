@@ -102,10 +102,24 @@ func (s *Shard) ID() string {
 // reconcile it. Because every requirement is constrained to one key, this is an exact set
 // intersection rather than a conservative approximation.
 func (s *Shard) Overlaps(other *Shard) bool {
+	return s.Conflict(other) != ""
+}
+
+// Conflict describes what both shards would match, or "" when they are disjoint.
+//
+// Worth reporting rather than just refusing, because an overlap is often not what the selectors
+// appear to say. Two negated shards look disjoint over the values in use today, yet both match every
+// unlabelled object and every value neither excludes.
+func (s *Shard) Conflict(other *Shard) string {
 	if s == nil || other == nil {
-		return false
+		return ""
 	}
-	return !s.values.intersect(other.values).empty()
+
+	overlap := s.values.intersect(other.values)
+	if overlap.empty() {
+		return ""
+	}
+	return overlap.describe()
 }
 
 // valueSet is the set of label values a selector matches, over the domain {absent} plus the
@@ -215,6 +229,26 @@ func (v valueSet) readable() (string, bool) {
 		return "", false
 	}
 	return candidate, true
+}
+
+// describe renders the set in operator-facing terms.
+func (v valueSet) describe() string {
+	sorted := v.sortedValues()
+
+	var parts []string
+	if v.absent {
+		parts = append(parts, "objects carrying no shard label")
+	}
+	switch {
+	case v.finite && len(sorted) > 0:
+		parts = append(parts, "the shard value(s) "+strings.Join(sorted, ", "))
+	case !v.finite && len(sorted) == 0:
+		parts = append(parts, "every shard value")
+	case !v.finite:
+		parts = append(parts, "every shard value except "+strings.Join(sorted, ", "))
+	}
+
+	return strings.Join(parts, " and ")
 }
 
 func (v valueSet) sortedValues() []string {

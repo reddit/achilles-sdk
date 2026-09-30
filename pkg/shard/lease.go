@@ -129,10 +129,10 @@ func (a *Advertiser) verify(ctx context.Context) error {
 			continue
 		}
 
-		if a.cfg.Shard.Overlaps(peer) {
+		if conflict := a.cfg.Shard.Conflict(peer); conflict != "" {
 			return fmt.Errorf(
-				"shard selector %q would overlap shard %q (selector %q, held by %q): refusing to start",
-				a.cfg.Shard, lease.Labels[IDLabelKey], raw, holder(&lease),
+				"shard selector %q overlaps shard %q (selector %q, held by %q) on %s: refusing to start",
+				a.cfg.Shard, lease.Labels[IDLabelKey], raw, holder(&lease), conflict,
 			)
 		}
 	}

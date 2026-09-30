@@ -45,6 +45,23 @@ The SDK does propagate the label from a root object onto the children that root 
 always agree with their owner's shard. The value comes from the root rather than from the instance's
 own selector, which stays correct when a selector matches several values.
 
+## Exactly one shard may be negated
+
+Negation is how a shard says "everything not claimed by name", so two negated shards always overlap
+no matter how their exclusions are written. `notin (0,1)` and `notin (2,3)` look like a clean split
+of the values in use, but both own every unlabelled object and every value neither excludes, so the
+second one to start is refused:
+
+```
+shard selector "shard.infrared.reddit.com/key notin (0,1)" overlaps shard "not-2-3"
+(selector "shard.infrared.reddit.com/key notin (2,3)", held by "peer-pod")
+on objects carrying no shard label and every shard value except 0, 1, 2, 3: refusing to start
+```
+
+Name the slices you want owned and negate once: `in (0,1)` paired with `notin (0,1)` is disjoint and
+total. Pairing `in (0,1)` with `in (2,3)` is disjoint but not total, which leaves unlabelled objects
+and any future value owned by nobody.
+
 ## Always run a catch-all
 
 An object whose label matches no shard is reconciled by nobody, and nothing anywhere reports an

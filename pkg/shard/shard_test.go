@@ -124,6 +124,53 @@ func TestOverlaps(t *testing.T) {
 	}
 }
 
+func TestConflict(t *testing.T) {
+	tests := map[string]struct {
+		a, b string
+		want string
+	}{
+		// Looks like a clean split of the values in use, but both shards own every unlabelled
+		// object and every value neither excludes. Only one shard may be negated.
+		"two negated shards": {
+			"shard.infrared.reddit.com/key notin (0,1)",
+			"shard.infrared.reddit.com/key notin (2,3)",
+			"objects carrying no shard label and every shard value except 0, 1, 2, 3",
+		},
+		"shared value": {
+			"shard.infrared.reddit.com/key in (a,b)",
+			"shard.infrared.reddit.com/key in (b,c)",
+			"the shard value(s) b",
+		},
+		"negated shard absorbs a named one": {
+			"shard.infrared.reddit.com/key notin (0,1)",
+			"shard.infrared.reddit.com/key=2",
+			"the shard value(s) 2",
+		},
+		"catch-all against a named shard": {
+			"!shard.infrared.reddit.com/key",
+			"shard.infrared.reddit.com/key=a",
+			"",
+		},
+		"the intended pairing is disjoint": {
+			"shard.infrared.reddit.com/key in (0,1)",
+			"shard.infrared.reddit.com/key notin (0,1)",
+			"",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			a, err := Parse(DefaultKey, tc.a)
+			require.NoError(t, err)
+			b, err := Parse(DefaultKey, tc.b)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.want, a.Conflict(b))
+			assert.Equal(t, tc.want, b.Conflict(a), "the description must not depend on argument order")
+		})
+	}
+}
+
 func TestSelectorMatchesExpectedObjects(t *testing.T) {
 	tests := map[string]struct {
 		raw    string
