@@ -1,10 +1,18 @@
 // Package shard implements label-based sharding for achilles-sdk controllers: running several
-// instances of one controller in a cluster, each owning a mutually exclusive slice of the same CRs.
+// instances of one controller in a cluster, each reconciling a mutually exclusive slice of the same
+// CRs.
 //
-// An instance's slice is described by a label selector constrained to a single key, which keeps
-// overlap between two instances exactly decidable (see Shard.Overlaps). The label itself is applied
-// by the platform, not by the SDK; the SDK only reads it, and propagates it from a root object onto
-// the children that object manages.
+// An instance's slice is described by a label selector constrained to a single key. The selector
+// states which shard values the instance *claims*; it filters nothing. Exclusivity is settled at
+// run time by Owner, which holds a Lease per concrete shard value, so two instances given
+// overlapping selectors divide the objects between them rather than both reconciling them.
+//
+// Sharding this way rather than by filtering each instance's informers trades memory for
+// robustness: every instance still caches every object, but a misconfigured selector costs an
+// arbitrary assignment of values to shards rather than duplicated writes or an outage.
+//
+// The label itself is applied by the platform, not by the SDK; the SDK only reads it, and
+// propagates it from a root object onto the children that object manages.
 package shard
 
 import (
@@ -34,11 +42,11 @@ type Shard struct {
 }
 
 // Parse builds a Shard from a Kubernetes label selector, e.g. "shard.infrared.reddit.com/key=a" or
-// "!shard.infrared.reddit.com/key" for the instance that owns everything unlabeled.
+// "!shard.infrared.reddit.com/key" for the instance that claims everything unlabeled.
 //
 // An empty raw selector returns a nil Shard, meaning sharding is disabled. Every requirement must
-// reference key, both so that the shard value stamped onto children is unambiguous and so that two
-// shards can be proven disjoint rather than conservatively assumed to overlap.
+// reference key, both so that the shard value stamped onto children is unambiguous and so that
+// overlap between two shards can be reported exactly rather than conservatively.
 func Parse(key, raw string) (*Shard, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
@@ -70,16 +78,21 @@ func Parse(key, raw string) (*Shard, error) {
 // Key returns the label key the shard is defined over.
 func (s *Shard) Key() string { return s.key }
 
-// Selector returns the selector to filter informers and watches with.
+// Selector returns the selector describing which shard values this instance claims.
 func (s *Shard) Selector() labels.Selector { return s.selector }
 
 // String returns the selector as the operator wrote it.
 func (s *Shard) String() string { return s.raw }
 
-// Requirements returns the selector's requirements, for composing into an existing selector.
-func (s *Shard) Requirements() labels.Requirements {
-	reqs, _ := s.selector.Requirements()
-	return reqs
+// Matches reports whether the shard claims a concrete value of the shard label.
+func (s *Shard) Matches(value string) bool {
+	return s.selector.Matches(labels.Set{s.key: value})
+}
+
+// MatchesUnlabeled reports whether the shard claims objects carrying no shard label. True for the
+// negated forms, which is why exactly one shard should use them.
+func (s *Shard) MatchesUnlabeled() bool {
+	return s.selector.Matches(labels.Set{})
 }
 
 // ID is a stable, DNS-1123-safe identifier for the shard, used to name the resources that must be
@@ -98,18 +111,19 @@ func (s *Shard) ID() string {
 	return "h" + hex.EncodeToString(sum[:])[:10]
 }
 
-// Overlaps reports whether both shards can match the same object, which means they would both
-// reconcile it. Because every requirement is constrained to one key, this is an exact set
-// intersection rather than a conservative approximation.
+// Overlaps reports whether both shards claim the same object. Because every requirement is
+// constrained to one key, this is an exact set intersection rather than a conservative
+// approximation.
 func (s *Shard) Overlaps(other *Shard) bool {
 	return s.Conflict(other) != ""
 }
 
-// Conflict describes what both shards would match, or "" when they are disjoint.
+// Conflict describes what both shards claim, or "" when they are disjoint.
 //
-// Worth reporting rather than just refusing, because an overlap is often not what the selectors
-// appear to say. Two negated shards look disjoint over the values in use today, yet both match every
-// unlabelled object and every value neither excludes.
+// Worth reporting because an overlap is often not what the selectors appear to say: two negated
+// shards look disjoint over the values in use today, yet both claim every unlabelled object and
+// every value neither excludes. Owner keeps that from duplicating work, but which shard ends up
+// serving the overlapping values is then incidental rather than designed.
 func (s *Shard) Conflict(other *Shard) string {
 	if s == nil || other == nil {
 		return ""

@@ -206,6 +206,16 @@ func (r *fsmReconciler[T, Obj]) reconcile(
 		return nil, nil, types.ErrorResult(fmt.Errorf("getting %T: %w", obj, err))
 	}
 
+	// Ownership is checked before anything else records against the object: every shard receives
+	// events for every object, so two shards both touching its metrics would double-count it.
+	if skip, retry := shard.Skip(ctx, obj); skip {
+		if retry {
+			log.Debugf("Deferring reconciliation, another shard still holds this object's value")
+			return nil, nil, types.RequeueResult("waiting to acquire this object's shard value", shard.PendingRequeueInterval)
+		}
+		return nil, nil, types.DoneResult()
+	}
+
 	isSuspended := meta.HasSuspendLabel(obj)
 	r.metrics.RecordSuspend(obj, isSuspended)
 	if isSuspended {

@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
-	"k8s.io/apimachinery/pkg/labels"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/rest"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -21,10 +21,12 @@ import (
 )
 
 const (
-	errShardTypesUnset = "sharded-types must be set when watch-label-selector is set, otherwise the " +
-		"selector would filter nothing"
-	errShardLeaderElectionIDUnset = "leader-election-id must be set when watch-label-selector is set, " +
-		"since it names both the per-shard leader election lock and the shard advertisement"
+	errShardTypesUnset = "sharded-types must be set when shard-selector is set, otherwise no object " +
+		"would ever be assigned to a shard"
+	errShardLeaderElectionIDUnset = "leader-election-id must be set when shard-selector is set, " +
+		"since it names the per-shard leader election lock and scopes the shard's Leases"
+	errShardLeaderElectionDisabled = "leader-election must be enabled when shard-selector is set, " +
+		"since it is what keeps two replicas of one shard from both claiming its values"
 )
 
 // serviceAccountNamespacePath is where an in-cluster pod finds its own namespace.
@@ -33,7 +35,7 @@ const serviceAccountNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccou
 // resolveShard parses the configured selector and validates the options sharding depends on.
 // Returns a nil Shard when sharding is disabled.
 func resolveShard(o *Options) (*shard.Shard, error) {
-	s, err := shard.Parse(shard.DefaultKey, o.WatchLabelSelector)
+	s, err := shard.Parse(shard.DefaultKey, o.ShardSelector)
 	if err != nil || s == nil {
 		return nil, err
 	}
@@ -44,13 +46,16 @@ func resolveShard(o *Options) (*shard.Shard, error) {
 	if o.LeaderElectionID == "" {
 		return nil, errors.New(errShardLeaderElectionIDUnset)
 	}
+	if !o.LeaderElection {
+		return nil, errors.New(errShardLeaderElectionDisabled)
+	}
 
 	return s, nil
 }
 
-// shardedLeaderElectionID scopes the leader election lock to the shard. Without this every shard
-// would contend for one lock, so exactly one replica across all shards would be active and the
-// rest would idle — sharding would silently do nothing.
+// shardedLeaderElectionID scopes the leader election lock to the shard, so that each shard elects a
+// leader among its own replicas. Sharing one lock would instead elect one leader across all shards,
+// leaving every other shard's objects unreconciled while its pods stayed healthy.
 func shardedLeaderElectionID(id string, s *shard.Shard) string {
 	if s == nil {
 		return id
@@ -58,64 +63,11 @@ func shardedLeaderElectionID(id string, s *shard.Shard) string {
 	return fmt.Sprintf("%s-%s", id, s.ID())
 }
 
-// applyShardToCache restricts the informers backing the sharded types to this shard's slice.
+// setupSharding advertises this shard's selector and starts the loop that acquires ownership of the
+// shard values it selects. Returns the Owner, which gates reconciliation.
 //
-// Only the declared root types are filtered. Children are labelled by the SDK (see shard.Propagate)
-// but left unfiltered, so enabling sharding does not strand children created before the label
-// existed. Entries are matched by GVK rather than by map key, since the caller may already have
-// registered the same type through a different pointer.
-func applyShardToCache(
-	cacheOpts cache.Options,
-	scheme *runtime.Scheme,
-	s *shard.Shard,
-	shardedTypes []client.Object,
-) (cache.Options, error) {
-	if s == nil {
-		return cacheOpts, nil
-	}
-
-	byObject := map[client.Object]cache.ByObject{}
-	existingKeys := map[schema.GroupVersionKind]client.Object{}
-	for obj, opts := range cacheOpts.ByObject {
-		byObject[obj] = opts
-		gvk, err := apiutil.GVKForObject(obj, scheme)
-		if err != nil {
-			return cacheOpts, fmt.Errorf("resolving GVK for cached type %T: %w", obj, err)
-		}
-		existingKeys[gvk] = obj
-	}
-
-	for _, obj := range shardedTypes {
-		gvk, err := apiutil.GVKForObject(obj, scheme)
-		if err != nil {
-			return cacheOpts, fmt.Errorf("resolving GVK for sharded type %T: %w", obj, err)
-		}
-
-		key := obj
-		if existing, ok := existingKeys[gvk]; ok {
-			key = existing
-		}
-
-		opts := byObject[key]
-		selector := opts.Label
-		if selector == nil {
-			selector = labels.Everything()
-		}
-		// Add ANDs the requirements, so a caller's own scoping is narrowed rather than replaced.
-		opts.Label = selector.Add(s.Requirements()...)
-		byObject[key] = opts
-	}
-
-	cacheOpts.ByObject = byObject
-	return cacheOpts, nil
-}
-
-// setupSharding verifies no other shard claims an overlapping slice and keeps this shard's
-// advertisement alive for the life of the process.
-//
-// The verification runs against a direct client rather than the manager's: the manager's client is
-// backed by a cache whose informers have not synced before Start, and the shard-filtered cache
-// would not match these Leases in any case.
+// Both run against a direct client rather than the manager's: the advertisement is written before
+// the manager starts, and caching Leases cluster-wide would pull in one Lease per node.
 func setupSharding(
 	ctx context.Context,
 	cfg *rest.Config,
@@ -123,20 +75,20 @@ func setupSharding(
 	opts *Options,
 	s *shard.Shard,
 	log *zap.SugaredLogger,
-) error {
+) (*shard.Owner, error) {
 	namespace, err := shardNamespace(opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	identity, err := processIdentity()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	direct, err := client.New(cfg, client.Options{Scheme: mgr.GetScheme()})
 	if err != nil {
-		return fmt.Errorf("building uncached client for shard verification: %w", err)
+		return nil, fmt.Errorf("building uncached client for shard leases: %w", err)
 	}
 
 	advertiser := shard.NewAdvertiser(direct, shard.Config{
@@ -146,14 +98,28 @@ func setupSharding(
 		Identity:  identity,
 		Log:       log,
 	})
+	if err := advertiser.Advertise(ctx); err != nil {
+		return nil, err
+	}
+	if err := mgr.Add(advertiser); err != nil {
+		return nil, fmt.Errorf("registering shard advertisement renewal: %w", err)
+	}
 
-	if !opts.DisableShardOverlapCheck {
-		if err := advertiser.Claim(ctx); err != nil {
-			return err
-		}
-		if err := mgr.Add(advertiser); err != nil {
-			return fmt.Errorf("registering shard advertisement renewal: %w", err)
-		}
+	list, err := inventoryFunc(mgr, s.Key(), opts.ShardedTypes)
+	if err != nil {
+		return nil, err
+	}
+
+	owner := shard.NewOwner(direct, shard.OwnerConfig{
+		Shard:     s,
+		Group:     opts.LeaderElectionID,
+		Namespace: namespace,
+		Identity:  identity,
+		List:      list,
+		Log:       log,
+	})
+	if err := mgr.Add(owner); err != nil {
+		return nil, fmt.Errorf("registering shard ownership: %w", err)
 	}
 
 	log.Infow("sharding enabled",
@@ -161,11 +127,64 @@ func setupSharding(
 		"shard", s.ID(),
 		"leaderElectionID", shardedLeaderElectionID(opts.LeaderElectionID, s),
 	)
-	return nil
+	return owner, nil
 }
 
-// shardNamespace is where advertisement Leases live, mirroring how leader election picks its
-// namespace.
+// inventoryFunc reports which shard values objects actually carry, which is the set ownership is
+// arbitrated over.
+//
+// It reads the manager's cache, which already holds these types because the controllers watch them,
+// so a scan costs no API traffic. The scan is proportional to the number of objects, not to the
+// number of shards, and it runs on every ownership sync.
+func inventoryFunc(mgr manager.Manager, key string, shardedTypes []client.Object) (shard.ListFunc, error) {
+	scheme := mgr.GetScheme()
+
+	listGVKs := make([]schema.GroupVersionKind, 0, len(shardedTypes))
+	for _, obj := range shardedTypes {
+		gvk, err := apiutil.GVKForObject(obj, scheme)
+		if err != nil {
+			return nil, fmt.Errorf("resolving GVK for sharded type %T: %w", obj, err)
+		}
+		listGVKs = append(listGVKs, gvk.GroupVersion().WithKind(gvk.Kind+"List"))
+	}
+
+	return func(ctx context.Context) (shard.Inventory, error) {
+		inventory := shard.Inventory{Values: sets.New[string]()}
+
+		for _, gvk := range listGVKs {
+			obj, err := scheme.New(gvk)
+			if err != nil {
+				return inventory, fmt.Errorf("constructing %s: %w", gvk, err)
+			}
+			list, ok := obj.(client.ObjectList)
+			if !ok {
+				return inventory, fmt.Errorf("%s is not a client.ObjectList", gvk)
+			}
+			if err := mgr.GetClient().List(ctx, list); err != nil {
+				return inventory, fmt.Errorf("listing %s: %w", gvk, err)
+			}
+
+			if err := apimeta.EachListItem(list, func(item runtime.Object) error {
+				o, ok := item.(client.Object)
+				if !ok {
+					return fmt.Errorf("%T is not a client.Object", item)
+				}
+				if value, labelled := o.GetLabels()[key]; labelled {
+					inventory.Values.Insert(value)
+				} else {
+					inventory.Unlabeled = true
+				}
+				return nil
+			}); err != nil {
+				return inventory, err
+			}
+		}
+
+		return inventory, nil
+	}, nil
+}
+
+// shardNamespace is where a shard's Leases live, mirroring how leader election picks its namespace.
 func shardNamespace(o *Options) (string, error) {
 	if o.LeaderElectionNamespace != "" {
 		return o.LeaderElectionNamespace, nil
@@ -173,7 +192,7 @@ func shardNamespace(o *Options) (string, error) {
 
 	ns, err := os.ReadFile(serviceAccountNamespacePath)
 	if err != nil {
-		return "", fmt.Errorf("determining namespace for shard advertisement, set leader-election-namespace: %w", err)
+		return "", fmt.Errorf("determining namespace for shard leases, set leader-election-namespace: %w", err)
 	}
 	return strings.TrimSpace(string(ns)), nil
 }

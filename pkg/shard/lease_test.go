@@ -31,9 +31,13 @@ func peerLease(name, shardID, selector string, renewedAgo time.Duration) *coordi
 
 	return &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   "ns",
-			Labels:      map[string]string{GroupLabelKey: testGroup, IDLabelKey: shardID},
+			Name:      name,
+			Namespace: "ns",
+			Labels: map[string]string{
+				GroupLabelKey: testGroup,
+				IDLabelKey:    shardID,
+				KindLabelKey:  kindAdvertisement,
+			},
 			Annotations: map[string]string{SelectorAnnotationKey: selector},
 		},
 		Spec: coordinationv1.LeaseSpec{
@@ -57,12 +61,12 @@ func advertiser(c client.Client, selector string) (*Advertiser, error) {
 	}), nil
 }
 
-func TestClaimSucceedsWithNoPeers(t *testing.T) {
+func TestAdvertiseSucceedsWithNoPeers(t *testing.T) {
 	c := testClient()
 	a, err := advertiser(c, "shard.infrared.reddit.com/key=a")
 	require.NoError(t, err)
 
-	require.NoError(t, a.Claim(context.Background()))
+	require.NoError(t, a.Advertise(context.Background()))
 
 	var lease coordinationv1.Lease
 	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: a.LeaseName()}, &lease))
@@ -70,31 +74,33 @@ func TestClaimSucceedsWithNoPeers(t *testing.T) {
 	assert.Equal(t, "self-pod", *lease.Spec.HolderIdentity)
 }
 
-func TestClaimFailsOnOverlappingPeer(t *testing.T) {
+func TestAdvertiseFailsOnOverlappingPeer(t *testing.T) {
 	c := testClient(peerLease("peer", "h123", "shard.infrared.reddit.com/key in (a,b)", time.Second))
 	a, err := advertiser(c, "shard.infrared.reddit.com/key=a")
 	require.NoError(t, err)
 
-	err = a.Claim(context.Background())
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "overlap")
+	overlap, err := a.Overlap(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, overlap, "overlaps")
 }
 
-func TestClaimIgnoresDisjointPeer(t *testing.T) {
+func TestAdvertiseIgnoresDisjointPeer(t *testing.T) {
 	c := testClient(peerLease("peer", "b", "shard.infrared.reddit.com/key=b", time.Second))
 	a, err := advertiser(c, "shard.infrared.reddit.com/key=a")
 	require.NoError(t, err)
 
-	assert.NoError(t, a.Claim(context.Background()))
+	overlap, err := a.Overlap(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, overlap)
 }
 
 // A rolling update runs two pods of the same shard at once, which must not be treated as a conflict.
-func TestClaimAllowsSameShardPeer(t *testing.T) {
+func TestAdvertiseAllowsSameShardPeer(t *testing.T) {
 	c := testClient(peerLease("test-controller-shard-a", "a", "shard.infrared.reddit.com/key=a", time.Second))
 	a, err := advertiser(c, "shard.infrared.reddit.com/key=a")
 	require.NoError(t, err)
 
-	require.NoError(t, a.Claim(context.Background()))
+	require.NoError(t, a.Advertise(context.Background()))
 
 	var lease coordinationv1.Lease
 	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: a.LeaseName()}, &lease))
@@ -103,22 +109,22 @@ func TestClaimAllowsSameShardPeer(t *testing.T) {
 
 // Readable IDs can collide: "key in (not,0,1)" and "key notin (0,1)" both render as "not-0-1".
 // Treating that as the same shard would silently disable the check, so the selector decides.
-func TestClaimFailsOnSameIDWithDifferentSelector(t *testing.T) {
+func TestAdvertiseFailsOnSameIDWithDifferentSelector(t *testing.T) {
 	c := testClient(peerLease("test-controller-shard-not-0-1", "not-0-1",
 		"shard.infrared.reddit.com/key in (not,0,1)", time.Second))
 	a, err := advertiser(c, "shard.infrared.reddit.com/key notin (0,1)")
 	require.NoError(t, err)
 	require.Equal(t, "not-0-1", a.cfg.Shard.ID(), "precondition: the IDs collide")
 
-	err = a.Claim(context.Background())
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "different selector")
+	overlap, err := a.Overlap(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, overlap, "different selector")
 }
 
 // Introducing a new shard value means carving it out of whichever live shard currently absorbs it,
 // and a negated shard absorbs every value it does not exclude. Both the narrowed shard and the new
 // one therefore overlap the shard still running, so neither can be rolled out underneath it.
-func TestClaimFailsWhenCarvingOutOfALiveShard(t *testing.T) {
+func TestAdvertiseFailsWhenCarvingOutOfALiveShard(t *testing.T) {
 	for name, selector := range map[string]string{
 		"the new shard itself":        "shard.infrared.reddit.com/key=2",
 		"narrowing the negated shard": "shard.infrared.reddit.com/key notin (0,1,2)",
@@ -130,20 +136,24 @@ func TestClaimFailsWhenCarvingOutOfALiveShard(t *testing.T) {
 			a, err := advertiser(testClient(live), selector)
 			require.NoError(t, err)
 
-			assert.ErrorContains(t, a.Claim(context.Background()), "overlap")
+			overlap, err := a.Overlap(context.Background())
+			require.NoError(t, err)
+			assert.Contains(t, overlap, "overlaps")
 		})
 	}
 }
 
-func TestClaimIgnoresStalePeer(t *testing.T) {
+func TestAdvertiseIgnoresStalePeer(t *testing.T) {
 	c := testClient(peerLease("peer", "h123", "shard.infrared.reddit.com/key in (a,b)", time.Hour))
 	a, err := advertiser(c, "shard.infrared.reddit.com/key=a")
 	require.NoError(t, err)
 
-	assert.NoError(t, a.Claim(context.Background()), "a peer that stopped renewing is gone and must not block startup")
+	overlap, err := a.Overlap(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, overlap, "a peer that stopped renewing is gone")
 }
 
-func TestClaimIgnoresOtherGroups(t *testing.T) {
+func TestAdvertiseIgnoresOtherGroups(t *testing.T) {
 	other := peerLease("peer", "h123", "shard.infrared.reddit.com/key in (a,b)", time.Second)
 	other.Labels[GroupLabelKey] = "a-different-controller"
 	c := testClient(other)
@@ -151,14 +161,16 @@ func TestClaimIgnoresOtherGroups(t *testing.T) {
 	a, err := advertiser(c, "shard.infrared.reddit.com/key=a")
 	require.NoError(t, err)
 
-	assert.NoError(t, a.Claim(context.Background()), "a different controller's shards are unrelated")
+	overlap, err := a.Overlap(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, overlap, "a different controller's shards are unrelated")
 }
 
 func TestRenewUpdatesRenewTime(t *testing.T) {
 	c := testClient()
 	a, err := advertiser(c, "shard.infrared.reddit.com/key=a")
 	require.NoError(t, err)
-	require.NoError(t, a.Claim(context.Background()))
+	require.NoError(t, a.Advertise(context.Background()))
 
 	var before coordinationv1.Lease
 	key := client.ObjectKey{Namespace: "ns", Name: a.LeaseName()}

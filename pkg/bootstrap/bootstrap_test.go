@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -126,7 +127,9 @@ var _ = Describe("buildManager", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("restricts a sharded type's informer to the shard's slice", func(gctx context.Context) {
+	// Exercises the whole mechanism against a real API server, whose optimistic concurrency is what
+	// makes lease acquisition mutually exclusive.
+	It("divides the objects in use between two shards with overlapping selectors", func(gctx context.Context) {
 		log := zaptest.LoggerWriter(GinkgoWriter).Sugar()
 		ctx := logging.NewContext(gctx, log)
 
@@ -140,20 +143,18 @@ var _ = Describe("buildManager", func() {
 		Expect(err).ToNot(HaveOccurred())
 		defer func() { Expect(testEnv.Stop()).To(Succeed()) }()
 
-		for name, shardValue := range map[string]string{"mine": "a", "theirs": "b"} {
+		for name, labelSet := range map[string]map[string]string{
+			"in-a":      {shard.DefaultKey: "a"},
+			"in-b":      {shard.DefaultKey: "b"},
+			"unlabeled": nil,
+		} {
 			Expect(testEnv.Client.Create(ctx, &testv1alpha1.TestClaim{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      name,
-					Namespace: "default",
-					Labels:    map[string]string{shard.DefaultKey: shardValue},
-				},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Labels: labelSet},
 			})).To(Succeed())
 		}
 
-		schemes := runtime.SchemeBuilder{testv1alpha1.AddToScheme}
-		mgr, err := buildManager(testEnv.Cfg, log, schemes, &Options{
-			ShardedTypes: []client.Object{&testv1alpha1.TestClaim{}},
-		}, mustParseShard("shard.infrared.reddit.com/key=a"))
+		opts := &Options{ShardedTypes: []client.Object{&testv1alpha1.TestClaim{}}}
+		mgr, err := buildManager(testEnv.Cfg, log, runtime.SchemeBuilder{testv1alpha1.AddToScheme}, opts, nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		mgrCtx, cancel := context.WithCancel(ctx)
@@ -164,15 +165,43 @@ var _ = Describe("buildManager", func() {
 		}()
 		Expect(mgr.GetCache().WaitForCacheSync(mgrCtx)).To(BeTrue())
 
-		// The cached client, unlike the API reader, sees only what the informer holds.
-		var claims testv1alpha1.TestClaimList
-		Expect(mgr.GetClient().List(mgrCtx, &claims)).To(Succeed())
+		list, err := inventoryFunc(mgr, shard.DefaultKey, opts.ShardedTypes)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(list(mgrCtx)).To(Equal(shard.Inventory{
+			Values:    sets.New("a", "b"),
+			Unlabeled: true,
+		}))
 
-		names := []string{}
-		for _, c := range claims.Items {
-			names = append(names, c.Name)
+		newOwner := func(identity, selector string) *shard.Owner {
+			return shard.NewOwner(testEnv.Client, shard.OwnerConfig{
+				Shard:     mustParseShard(selector),
+				Group:     "ctl",
+				Namespace: "default",
+				Identity:  identity,
+				List:      list,
+				Log:       log,
+			})
 		}
-		Expect(names).To(ConsistOf("mine"), "the other shard's objects must not reach this instance")
+
+		// Both selectors match every unlabeled object and value "b", so the selectors alone cannot
+		// separate these two shards.
+		exceptA := newOwner("pod-1", "shard.infrared.reddit.com/key notin (a)")
+		exceptB := newOwner("pod-2", "shard.infrared.reddit.com/key notin (b)")
+
+		Expect(exceptA.Sync(mgrCtx)).To(Succeed())
+		Expect(exceptB.Sync(mgrCtx)).To(Succeed())
+
+		claim := func(name string, labelSet map[string]string) client.Object {
+			return &testv1alpha1.TestClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labelSet}}
+		}
+
+		Expect(exceptB.Ownership(claim("in-a", map[string]string{shard.DefaultKey: "a"}))).To(Equal(shard.Owned))
+		Expect(exceptA.Ownership(claim("in-b", map[string]string{shard.DefaultKey: "b"}))).To(Equal(shard.Owned))
+
+		// The contested partitions go to exactly one shard, and the loser defers rather than
+		// duplicating the work.
+		Expect(exceptA.Ownership(claim("unlabeled", nil))).To(Equal(shard.Owned))
+		Expect(exceptB.Ownership(claim("unlabeled", nil))).To(Equal(shard.Pending))
 	})
 })
 

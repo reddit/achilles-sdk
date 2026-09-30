@@ -77,7 +77,7 @@ type Options struct {
 	// Cache.SyncPeriod, when nil, is defaulted from the SyncPeriod flag.
 	Cache cache.Options
 
-	// WatchLabelSelector restricts this instance to one shard of the objects it would otherwise
+	// ShardSelector restricts this instance to one shard of the objects it would otherwise
 	// reconcile, letting several instances of the same controller run in a cluster over mutually
 	// exclusive slices. Empty disables sharding.
 	//
@@ -85,19 +85,21 @@ type Options struct {
 	// Exactly one instance should run the negated form, "!shard.infrared.reddit.com/key", so that
 	// objects carrying no shard label are still reconciled by someone.
 	//
+	// The selector states which shard values this instance *claims*; it does not filter any watch.
+	// Ownership is settled at run time by holding a Lease per value, so two instances given
+	// overlapping selectors still divide the objects between them rather than duplicating work.
+	//
 	// Assigning the label to objects is the platform's responsibility. The SDK only reads it, and
 	// propagates it from a root object onto the children that object manages.
-	WatchLabelSelector string
+	ShardSelector string
 
-	// ShardedTypes are the root types whose informers WatchLabelSelector filters. It has no
-	// corresponding CLI flag and must be set programmatically. Required when WatchLabelSelector
-	// is set, since otherwise the selector would filter nothing.
+	// ShardedTypes are the root types partitioned by ShardSelector: the types whose shard labels
+	// are enumerated to discover the values in use, and whose reconciliation is gated on owning
+	// the object's value. It has no corresponding CLI flag and must be set programmatically.
+	//
+	// A root type left out of this list is reconciled by every shard, so any controller in a
+	// sharded binary needs its root type listed here.
 	ShardedTypes []client.Object
-
-	// DisableShardOverlapCheck skips the startup safeguard that refuses to run when another shard
-	// of this controller already claims an overlapping slice. Intended for running a controller
-	// out of cluster against a cluster that has live shards.
-	DisableShardOverlapCheck bool
 
 	// Determines whether the controller should use leader election (a form of active-passive HA).
 	LeaderElection bool
@@ -141,8 +143,7 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 
 	flags.DurationVar(&o.SyncPeriod, "sync-period", 10*time.Hour, "Minimum frequency at which all controllers will perform a reconciliation.")
 
-	flags.StringVar(&o.WatchLabelSelector, "watch-label-selector", "", fmt.Sprintf("Restricts this instance to the objects matching the given selector, which must reference only %q. Use the negated form to own everything unlabeled. Empty disables sharding", shard.DefaultKey))
-	flags.BoolVar(&o.DisableShardOverlapCheck, "disable-shard-overlap-check", false, "Skips the startup check that refuses to run when another shard of this controller claims an overlapping slice")
+	flags.StringVar(&o.ShardSelector, "shard-selector", "", fmt.Sprintf("Restricts this instance to the objects matching the given selector, which must reference only %q. Use the negated form to own everything unlabeled. Empty disables sharding", shard.DefaultKey))
 
 	flags.BoolVar(&o.LeaderElection, "leader-election", false, "Enables leader election for the controller (a form of active-passive HA)")
 	flags.StringVar(&o.LeaderElectionID, "leader-election-id", "", "Name of the resource that leader election will use for holding the leader lock")
@@ -182,9 +183,10 @@ func Start(
 		return fmt.Errorf("building manager: %w", err)
 	}
 
-	// Before the manager starts, so an overlapping shard never reconciles anything.
+	var owner *shard.Owner
 	if shardCfg != nil {
-		if err := setupSharding(ctx, cfg, mgr, opts, shardCfg, log); err != nil {
+		owner, err = setupSharding(ctx, cfg, mgr, opts, shardCfg, log)
+		if err != nil {
 			return fmt.Errorf("setting up sharding: %w", err)
 		}
 	}
@@ -193,8 +195,15 @@ func Start(
 		return fmt.Errorf("running start func: %w", err)
 	}
 
+	// The manager hands its start context to every Reconcile, which is how the ownership gate
+	// reaches the reconcilers without a package-level global.
+	runCtx := ctrl.SetupSignalHandler()
+	if owner != nil {
+		runCtx = shard.NewContext(runCtx, owner)
+	}
+
 	log.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(runCtx); err != nil {
 		return fmt.Errorf("starting manager: %w", err)
 	}
 
@@ -220,18 +229,13 @@ func buildManager(
 		}
 	}
 
-	cacheOpts, err := applyShardToCache(cacheOptions(opts), scheme, shardCfg, opts.ShardedTypes)
-	if err != nil {
-		return nil, fmt.Errorf("scoping cache to shard: %w", err)
-	}
-
 	mgr, err := manager.New(
 		cfg,
 		manager.Options{
 			HealthProbeBindAddress:  opts.HealthAddr,
 			Metrics:                 server.Options{BindAddress: opts.MetricsAddr},
 			Logger:                  zapr.NewLogger(log.Desugar()),
-			Cache:                   cacheOpts,
+			Cache:                   cacheOptions(opts),
 			LeaderElection:          opts.LeaderElection,
 			LeaderElectionID:        shardedLeaderElectionID(opts.LeaderElectionID, shardCfg),
 			LeaderElectionNamespace: opts.LeaderElectionNamespace,

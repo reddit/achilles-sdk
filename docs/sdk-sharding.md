@@ -1,28 +1,35 @@
 # Sharding a controller
 
-A controller normally reconciles every object of its kind in a cluster: one informer cache holding
-everything, one work queue, one blast radius. Sharding lets several instances of the same controller
-run in one cluster, each owning a mutually exclusive slice of those objects.
+A controller normally reconciles every object of its kind in a cluster: one work queue, one blast
+radius. Sharding lets several instances of the same controller run in one cluster, each reconciling
+a mutually exclusive slice of those objects.
 
 Each object is assigned to a shard with the `shard.infrared.reddit.com/key` label, and each instance
-is told which shard it owns:
+is told which values it claims:
 
 ```
---watch-label-selector=shard.infrared.reddit.com/key=shard1
+--shard-selector=shard.infrared.reddit.com/key=shard1
 ```
 
-That instance then watches, caches, and reconciles only the objects carrying that label.
+The selector **claims** values; it does not filter anything. Every instance still watches and caches
+every object, and exclusivity is settled at run time: the SDK holds a Lease per concrete shard value
+and an instance reconciles an object only while it holds the Lease on that object's value.
 
-The design follows [Flux's sharding](https://fluxcd.io/flux/installation/configuration/sharding/),
-including the flag name, so operators familiar with sharded Flux controllers can read an Achilles
-deployment without learning a second vocabulary.
+That indirection is the whole design. Selectors describe an unbounded space of values, so two
+selectors can only ever be *proven* disjoint over the values that exist today — which makes any
+selector-only scheme wrong the moment a new value appears. Leases are taken over the values actually
+in use, a finite set, so overlapping selectors still divide the objects cleanly.
+
+The label convention and selector grammar follow
+[Flux's sharding](https://fluxcd.io/flux/installation/configuration/sharding/); the ownership
+mechanism does not.
 
 ## Enabling it
 
-Sharding is opt-in per controller, and needs two things beyond the flag.
+Sharding is opt-in per controller, and needs three things beyond the flag.
 
-Declare the root types whose informers the selector should filter. Without this the selector would
-filter nothing, so the SDK refuses to start rather than appearing to shard:
+Declare the root types being partitioned. These are the types whose labels are scanned to discover
+the values in use, and whose reconciliation is gated on ownership:
 
 ```go
 opts := &bootstrap.Options{
@@ -31,10 +38,16 @@ opts := &bootstrap.Options{
 opts.AddToFlags(flags)
 ```
 
-Set `--leader-election-id`. It names both the per-shard leader election lock and the shard's
-advertisement, so the SDK requires it whenever `--watch-label-selector` is set. The SDK appends the
-shard to it automatically — do **not** vary it per shard yourself. If every shard shared one lock,
-exactly one replica across all shards would be active and the rest would idle.
+> A root type left out of this list is reconciled by **every** shard. If your binary registers
+> several controllers, every one of their root types belongs here.
+
+Set `--leader-election-id`. The SDK appends the shard to it, so each shard elects a leader among its
+own replicas — do **not** vary it per shard yourself. If every shard shared one lock, exactly one
+replica across all shards would be active and every other shard's objects would go unreconciled
+while its pods stayed healthy.
+
+Set `--leader-election`. Only the leader of a shard claims its values, so without it two replicas of
+one shard would both claim and both reconcile. The SDK refuses to start without it.
 
 ## Assigning objects to shards
 
@@ -43,109 +56,96 @@ Kustomization, an admission policy, or whatever creates the objects.
 
 The SDK does propagate the label from a root object onto the children that root manages, so children
 always agree with their owner's shard. The value comes from the root rather than from the instance's
-own selector, which stays correct when a selector matches several values.
-
-## Exactly one shard may be negated
-
-Negation is how a shard says "everything not claimed by name", so two negated shards always overlap
-no matter how their exclusions are written. `notin (0,1)` and `notin (2,3)` look like a clean split
-of the values in use, but both own every unlabelled object and every value neither excludes, so the
-second one to start is refused:
-
-```
-shard selector "shard.infrared.reddit.com/key notin (0,1)" overlaps shard "not-2-3"
-(selector "shard.infrared.reddit.com/key notin (2,3)", held by "peer-pod")
-on objects carrying no shard label and every shard value except 0, 1, 2, 3: refusing to start
-```
-
-Name the slices you want owned and negate once: `in (0,1)` paired with `notin (0,1)` is disjoint and
-total. Pairing `in (0,1)` with `in (2,3)` is disjoint but not total, which leaves unlabelled objects
-and any future value owned by nobody.
+own selector, which stays correct when a selector claims several values.
 
 ## Always run a catch-all
 
-An object whose label matches no shard is reconciled by nobody, and nothing anywhere reports an
-error. Run exactly one instance with the negated selector so unlabeled objects always have an owner:
+Objects carrying no shard label form their own partition, with its own Lease. Run exactly one
+instance with the negated selector so that partition has an owner:
 
 ```
---watch-label-selector=!shard.infrared.reddit.com/key
+--shard-selector=!shard.infrared.reddit.com/key
 ```
 
 This works because Kubernetes treats `!=`, `notin`, and `!key` as satisfied by objects that do not
 carry the key at all. Note there is no `OR` in the selector grammar, so "my shard or unlabeled"
 cannot be written as a single selector.
 
-## The overlap safeguard
+## New shard values
 
-Two instances whose selectors intersect would both reconcile the same objects and fight over them.
-At startup each instance publishes its selector in a Lease and refuses to run if a *different* shard
-of the same controller already claims an overlapping slice.
+Nothing to do. A value appearing is discovered on the next ownership sync, its Lease is created, and
+whichever instance claims it acquires it. If several instances claim it, one wins and the others
+defer — the objects are reconciled exactly once either way.
 
-Because every requirement must reference the one shard key, overlap is an exact set intersection
-rather than a conservative guess. And because the check keys on shard identity rather than on the
-mere presence of a peer, a rolling update of the same shard passes cleanly.
+This is the case a selector-only scheme cannot get right. `notin (0,1)` and `notin (2,3)` look like
+a clean split of the values in use, but both claim every value neither excludes, so a new value 4
+belongs to both. Arbitrating over the concrete value means exactly one of them serves it.
 
-Each shard gets a short identifier derived from the values its selector matches, which names the
-Lease and the leader election lock. It spells the value set out where it can, so
+## Overlapping selectors
+
+Overlap is safe but almost never intended, so the SDK reports it without refusing to run. Each
+instance publishes its selector in an advertisement Lease, and warns when a different shard of the
+same controller advertises an overlapping one:
+
+```
+shard selector overlaps another shard of this controller, so which shard serves the overlapping
+values is arbitrary   overlap: selector "shard.infrared.reddit.com/key notin (0,1)" overlaps shard
+"not-2-3" (selector "shard.infrared.reddit.com/key notin (2,3)", held by "peer-pod") on objects
+carrying no shard label and every shard value except 0, 1, 2, 3
+```
+
+Overlap costs you predictability, not correctness: the assignment of the overlapping values to
+shards becomes incidental rather than designed. Name the slices you want owned and negate once —
+`in (0,1)` paired with `notin (0,1)` is disjoint and total.
+
+The warning is emitted at startup only, and reflects what peers are *running* rather than what their
+manifests declare, so it cannot see a peer that crashed before advertising.
+`achilles_shard_selector_overlap` carries the same signal as a gauge.
+
+## Shard identifiers
+
+Each shard gets a short identifier derived from the values its selector claims, which names its
+advertisement Lease and its leader election lock. It spells the value set out where it can, so
 `key in (0,1)` becomes `0-1`, `key notin (0,1)` becomes `not-0-1`, and `!key` becomes `catchall`;
-anything without a short DNS-safe rendering falls back to a hash. Distinct selectors can render to
-the same identifier, so a peer holding your identifier with a *different* selector is also refused.
+anything without a short DNS-safe rendering falls back to a hash.
 
-Two consequences worth knowing:
+Distinct selectors can render to the same identifier, which means they would also share a leader
+election lock and one of them would never run. That case is reported as an overlap.
 
-- The check records what a process is *running*, so it cannot see a peer that crashed before
-  advertising. Catching that belongs in a lint over your manifests.
-- It runs once, at startup. A conflict is caught by whichever instance arrives second; an instance
-  already running never re-evaluates its peers. An advertisement stops being renewed when its
-  process exits and is ignored once it expires, but the Lease object itself is left behind, so stale
-  advertisements from retired shards accumulate until something prunes them.
-- A genuine overlap fails before health probes are served, so the rollout stalls rather than
-  crash-looping into service. Renaming a shard is therefore a drain-then-deploy operation, not a
-  rolling update.
+## Adding, changing, or removing a shard
 
-Pass `--disable-shard-overlap-check` to skip it, which is mainly useful when running a controller
-out of cluster against a cluster that has live shards.
+An ordinary rolling update. Values move between shards as Leases are released and acquired, so there
+is no drain-then-deploy step and no window in which two instances reconcile the same object.
 
-## Adding a shard
+Removing a shard is the one case needing care: its values are released, and if no remaining selector
+claims them, their objects go unreconciled with nothing reporting an error. Always leave a catch-all
+running.
 
-New shard *values* need no action. A negated shard absorbs every value it does not exclude, including
-values that did not exist when it was deployed, so labelling objects with a brand new value simply
-leaves them with the negated shard. Nothing is ever orphaned by the appearance of a value.
+## Failure modes to alert on
 
-Adding a new *instance* to own some of those values is the harder direction, because that slice is by
-definition already owned by whichever live shard absorbs it. Both halves of the change overlap the
-shard still running — the narrowed selector because it still shares every value it did not newly
-exclude, and the new shard because its values are exactly the ones being taken away — so neither can
-be rolled out underneath it. The incoming pod detects the overlap and refuses to start, and because
-that happens before health probes are served, the rollout stalls with the old pod still serving.
+| Metric | Meaning |
+| --- | --- |
+| `achilles_shard_values_unowned` | A value in use whose Lease no instance holds. Its objects are reconciled by nobody. The one to page on. |
+| `achilles_shard_values_contested` | This instance claims a value another shard holds. Correct but unintended; the selectors overlap. |
+| `achilles_shard_selector_overlap` | Another shard advertises an overlapping selector. |
+| `achilles_shard_reconciles_skipped_total` | Reconciles skipped for lack of ownership, by reason. |
 
-Two ways through, and which you want depends on whether you would rather have a gap or a brief
-double-reconcile:
+Mutual exclusion is as strong as Kubernetes leader election and no stronger. Leases carry no fencing
+token, so a process stalled past its lease expiry can wake believing it still owns a value.
 
-- **Stop the shard being carved, then deploy both selectors.** Its slice goes unreconciled until the
-  replacements come up. Existing objects are untouched during the gap; only changes go unprocessed.
-- **Deploy the new topology with `--disable-shard-overlap-check`, then remove the flag.** Two
-  instances briefly reconcile the overlapping slice. For identical builds they render the same
-  children and converge on the same result, so the cost is duplicated work and some write conflicts
-  rather than divergence — but `status` can flap between them if the builds differ.
+## What sharding does and does not buy
 
-The same applies to any change of an existing shard's selector, not just to adding one: widening,
-narrowing, and renaming are all drain-then-deploy.
+It distributes reconcile work and shrinks the blast radius of one instance. It does **not** shrink
+per-instance memory: every instance caches every object, because ownership is decided after the
+object is in hand rather than by filtering it out of the informer.
 
-## Rolling it out to an existing controller
-
-Objects created before sharding carry no shard label. Only the root types you declare in
-`ShardedTypes` are filtered; children are labelled but their informers are left unfiltered, so
-existing children keep working while normal reconciliation backfills their labels. Filtering child
-types too is safe only once that backfill is complete.
-
-Leaving child informers unfiltered is safe, not merely convenient: the SDK deletes only objects a
-reconciler explicitly enqueues, never objects it merely sees, so one shard can never prune another's
-children.
+The ownership sync scans the sharded types on every tick, so cost scales with the number of objects
+and with the **cardinality of the shard key** — one Lease per distinct value, each renewed every few
+seconds. A handful of values is free; thousands is not. Shard on something low-cardinality.
 
 ## Changing an object's shard
 
 Treat the shard label as immutable. If an object moves shards while its old owner still holds the
-finalizer, that instance stops watching it and the new one does not own the finalizer, so deletion
-hangs indefinitely with nothing reporting an error. Enforce immutability with a validating webhook,
-or ensure nothing relabels live objects.
+finalizer, the new owner reconciles it but the finalizer belongs to an instance that no longer owns
+it, so deletion can hang with nothing reporting an error. Enforce immutability with a validating
+webhook, or ensure nothing relabels live objects.
