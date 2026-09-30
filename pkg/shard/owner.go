@@ -231,7 +231,11 @@ func (o *Owner) reconcileLease(ctx context.Context, name string, ref valueRef) (
 		if !apierrors.IsAlreadyExists(err) {
 			return leaseUnowned, fmt.Errorf("creating ownership lease for value %s: %w", ref, err)
 		}
-		// Another instance created it first; decide against what it wrote, next sync.
+		// Another instance created it first. Re-read rather than assume, so that losing the race
+		// is not reported as the value being unowned.
+		if err := o.client.Get(ctx, client.ObjectKey{Namespace: o.cfg.Namespace, Name: name}, &lease); err != nil {
+			return leaseUnowned, fmt.Errorf("getting ownership lease for value %s: %w", ref, err)
+		}
 		return o.stateOf(&lease, selected), nil
 	}
 	if err != nil {
