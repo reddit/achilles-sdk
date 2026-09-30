@@ -165,17 +165,23 @@ var _ = Describe("buildManager", func() {
 		}()
 		Expect(mgr.GetCache().WaitForCacheSync(mgrCtx)).To(BeTrue())
 
-		list, err := inventoryFunc(mgr, shard.DefaultKey, opts.ShardedTypes)
+		gvks, err := shardedGVKs(mgr.GetScheme(), opts.ShardedTypes)
 		Expect(err).NotTo(HaveOccurred())
+		group, err := shard.GroupFor(gvks)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(group.Name).To(Equal("testclaim"), "the group is named after what it partitions")
+
+		list := inventoryFunc(mgr, shard.DefaultKey, gvks)
 		Expect(list(mgrCtx)).To(Equal(shard.Inventory{
 			Values:    sets.New("a", "b"),
 			Unlabeled: true,
 		}))
 
-		newOwner := func(identity, selector string) *shard.Owner {
+		newOwner := func(instance, identity, selector string) *shard.Owner {
 			return shard.NewOwner(testEnv.Client, shard.OwnerConfig{
 				Shard:     mustParseShard(selector),
-				Group:     "ctl",
+				Group:     group,
+				Instance:  instance,
 				Namespace: "default",
 				Identity:  identity,
 				List:      list,
@@ -185,8 +191,8 @@ var _ = Describe("buildManager", func() {
 
 		// Both selectors match every unlabeled object and value "b", so the selectors alone cannot
 		// separate these two shards.
-		exceptA := newOwner("pod-1", "shard.infrared.reddit.com/key notin (a)")
-		exceptB := newOwner("pod-2", "shard.infrared.reddit.com/key notin (b)")
+		exceptA := newOwner("ctl-except-a", "pod-1", "shard.infrared.reddit.com/key notin (a)")
+		exceptB := newOwner("ctl-except-b", "pod-2", "shard.infrared.reddit.com/key notin (b)")
 
 		Expect(exceptA.Sync(mgrCtx)).To(Succeed())
 		Expect(exceptB.Sync(mgrCtx)).To(Succeed())

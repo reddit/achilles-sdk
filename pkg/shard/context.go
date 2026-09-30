@@ -43,10 +43,10 @@ func Skip(ctx context.Context, obj client.Object) (skip, retry bool) {
 	case Owned:
 		return false, false
 	case NotSelected:
-		recordSkip(o.cfg.Group, o.cfg.Shard.ID(), "not-selected")
+		recordSkip(o.cfg.Group.Name, o.cfg.Shard.ID(), "not-selected")
 		return true, false
 	default:
-		recordSkip(o.cfg.Group, o.cfg.Shard.ID(), "lease-not-held")
+		recordSkip(o.cfg.Group.Name, o.cfg.Shard.ID(), "lease-not-held")
 		return true, true
 	}
 }

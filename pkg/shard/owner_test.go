@@ -21,25 +21,21 @@ func inventory(unlabeled bool, values ...string) ListFunc {
 	}
 }
 
-func owner(c client.Client, identity, selector string, list ListFunc) (*Owner, error) {
+// mustOwner builds an Owner for one pod (identity) of one Deployment (instance).
+func mustOwner(t *testing.T, c client.Client, instance, identity, selector string, list ListFunc) *Owner {
+	t.Helper()
+
 	s, err := Parse(DefaultKey, selector)
-	if err != nil {
-		return nil, err
-	}
+	require.NoError(t, err)
+
 	return NewOwner(c, OwnerConfig{
 		Shard:     s,
-		Group:     testGroup,
+		Group:     testGroupID,
+		Instance:  instance,
 		Namespace: "ns",
 		Identity:  identity,
 		List:      list,
-	}), nil
-}
-
-func mustOwner(t *testing.T, c client.Client, identity, selector string, list ListFunc) *Owner {
-	t.Helper()
-	o, err := owner(c, identity, selector, list)
-	require.NoError(t, err)
-	return o
+	})
 }
 
 // holders maps each value to the identity currently holding its lease, "" when unheld.
@@ -61,7 +57,7 @@ func holders(t *testing.T, c client.Client) map[string]string {
 }
 
 // valueLease builds an ownership Lease as some other process would have left it.
-func valueLease(value, shardID, identity string, renewedAgo time.Duration) *coordinationv1.Lease {
+func valueLease(value, instance, identity string, renewedAgo time.Duration) *coordinationv1.Lease {
 	renew := metav1.NewMicroTime(time.Now().Add(-renewedAgo))
 	duration := int32(15)
 
@@ -70,9 +66,9 @@ func valueLease(value, shardID, identity string, renewedAgo time.Duration) *coor
 			Name:      valueLeaseName(testGroup, value, false),
 			Namespace: "ns",
 			Labels: map[string]string{
-				GroupLabelKey: testGroup,
-				KindLabelKey:  kindValue,
-				IDLabelKey:    shardID,
+				GroupLabelKey:    testGroup,
+				KindLabelKey:     kindValue,
+				InstanceLabelKey: instance,
 			},
 			Annotations: map[string]string{ValueAnnotationKey: value},
 		},
@@ -99,8 +95,8 @@ func TestNewValueIsClaimedByExactlyOneOverlappingShard(t *testing.T) {
 	c := testClient()
 	list := inventory(false, "0", "1", "2", "3")
 
-	a := mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key notin (0,1)", list)
-	b := mustOwner(t, c, "pod-b", "shard.infrared.reddit.com/key notin (2,3)", list)
+	a := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key notin (0,1)", list)
+	b := mustOwner(t, c, "inst-b", "pod-b", "shard.infrared.reddit.com/key notin (2,3)", list)
 
 	require.NoError(t, a.Sync(context.Background()))
 	require.NoError(t, b.Sync(context.Background()))
@@ -110,8 +106,8 @@ func TestNewValueIsClaimedByExactlyOneOverlappingShard(t *testing.T) {
 
 	// A fourth value appears. Both selectors match it.
 	list = inventory(false, "0", "1", "2", "3", "4")
-	a = mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key notin (0,1)", list)
-	b = mustOwner(t, c, "pod-b", "shard.infrared.reddit.com/key notin (2,3)", list)
+	a = mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key notin (0,1)", list)
+	b = mustOwner(t, c, "inst-b", "pod-b", "shard.infrared.reddit.com/key notin (2,3)", list)
 
 	require.NoError(t, a.Sync(context.Background()))
 	require.NoError(t, b.Sync(context.Background()))
@@ -124,7 +120,7 @@ func TestNewValueIsClaimedByExactlyOneOverlappingShard(t *testing.T) {
 
 func TestSyncAcquiresOnlySelectedValues(t *testing.T) {
 	c := testClient()
-	o := mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0", "1", "2", "3"))
+	o := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0", "1", "2", "3"))
 
 	require.NoError(t, o.Sync(context.Background()))
 
@@ -134,12 +130,12 @@ func TestSyncAcquiresOnlySelectedValues(t *testing.T) {
 
 func TestSyncConvergesLeaseSetOntoValuesInUse(t *testing.T) {
 	c := testClient()
-	o := mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0", "1"))
+	o := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0", "1"))
 	require.NoError(t, o.Sync(context.Background()))
 	require.Contains(t, holders(t, c), "1")
 
 	// Value 1 falls out of use.
-	o = mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0"))
+	o = mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0"))
 	require.NoError(t, o.Sync(context.Background()))
 
 	assert.Equal(t, map[string]string{"0": "pod-a"}, holders(t, c),
@@ -148,22 +144,22 @@ func TestSyncConvergesLeaseSetOntoValuesInUse(t *testing.T) {
 
 func TestSyncClaimsTheUnlabeledSentinel(t *testing.T) {
 	c := testClient()
-	catchAll := mustOwner(t, c, "pod-catchall", "!shard.infrared.reddit.com/key", inventory(true, "0"))
+	catchAll := mustOwner(t, c, "inst-catchall", "pod-catchall", "!shard.infrared.reddit.com/key", inventory(true, "0"))
 	require.NoError(t, catchAll.Sync(context.Background()))
 
 	assert.Equal(t, Owned, catchAll.Ownership(obj("", false)))
 	assert.Equal(t, NotSelected, catchAll.Ownership(obj("0", true)))
 }
 
-func TestSyncDoesNotStealALiveLeaseFromAnotherShard(t *testing.T) {
+func TestSyncDoesNotStealALiveLeaseFromAnotherInstance(t *testing.T) {
 	c := testClient()
 	list := inventory(false, "0", "1")
 
-	held := mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key in (0)", list)
+	held := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", list)
 	require.NoError(t, held.Sync(context.Background()))
 
-	// A different shard, misconfigured to also select value 0.
-	thief := mustOwner(t, c, "pod-b", "shard.infrared.reddit.com/key in (0,1)", list)
+	// A different Deployment, misconfigured to also select value 0.
+	thief := mustOwner(t, c, "inst-b", "pod-b", "shard.infrared.reddit.com/key in (0,1)", list)
 	require.NoError(t, thief.Sync(context.Background()))
 
 	assert.Equal(t, "pod-a", holders(t, c)["0"], "the incumbent keeps a live lease")
@@ -171,52 +167,52 @@ func TestSyncDoesNotStealALiveLeaseFromAnotherShard(t *testing.T) {
 	assert.Equal(t, Pending, thief.Ownership(obj("0", true)))
 }
 
-// Two instances carrying the same selector are replicas of one shard, not rivals, so the incoming
-// one takes the outgoing one's values rather than waiting out their expiry.
-func TestSyncTreatsAnIdenticalSelectorAsTheSameShard(t *testing.T) {
-	c := testClient()
-	list := inventory(false, "0")
-
-	outgoing := mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key in (0)", list)
-	require.NoError(t, outgoing.Sync(context.Background()))
-
-	incoming := mustOwner(t, c, "pod-b", "shard.infrared.reddit.com/key in (0)", list)
-	require.NoError(t, incoming.Sync(context.Background()))
-
-	assert.Equal(t, "pod-b", holders(t, c)["0"])
-}
-
 func TestSyncTakesOverAnExpiredLease(t *testing.T) {
 	c := testClient()
-	stale := valueLease("0", "0", "dead-pod", time.Hour)
-	require.NoError(t, c.Create(context.Background(), stale))
+	require.NoError(t, c.Create(context.Background(), valueLease("0", "inst-dead", "dead-pod", time.Hour)))
 
-	o := mustOwner(t, c, "pod-b", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	o := mustOwner(t, c, "inst-b", "pod-b", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
 	require.NoError(t, o.Sync(context.Background()))
 
 	assert.Equal(t, "pod-b", holders(t, c)["0"], "a holder that stopped renewing has gone")
 }
 
-// On leader failover the outgoing leader's value leases are still live, but only one leader of a
-// shard exists at a time, so the incoming leader may take them over without waiting out expiry.
-func TestSyncTakesOverItsOwnShardsLeaseImmediately(t *testing.T) {
+// On leader failover the outgoing leader's value leases are still live, but leader election runs per
+// instance, so the incoming leader of that same instance may take them over without waiting out
+// expiry.
+func TestSyncTakesOverItsOwnInstancesLeaseImmediately(t *testing.T) {
 	c := testClient()
-	live := valueLease("0", "0", "previous-leader", time.Second)
-	require.NoError(t, c.Create(context.Background(), live))
+	require.NoError(t, c.Create(context.Background(), valueLease("0", "inst-a", "previous-leader", time.Second)))
 
-	o := mustOwner(t, c, "new-leader", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	o := mustOwner(t, c, "inst-a", "new-leader", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
 	require.NoError(t, o.Sync(context.Background()))
 
 	assert.Equal(t, "new-leader", holders(t, c)["0"])
 }
 
+// Keying takeover on the instance rather than the shard is what makes editing a selector a clean
+// rolling update: the incoming pod's shard differs, but it is the same Deployment.
+func TestSyncTakesOverItsOwnInstancesLeaseAfterASelectorEdit(t *testing.T) {
+	c := testClient()
+	list := inventory(false, "0", "1")
+
+	before := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", list)
+	require.NoError(t, before.Sync(context.Background()))
+	require.NotEqual(t, before.Shard().ID(), "0-1", "precondition: the edit changes the shard ID")
+
+	after := mustOwner(t, c, "inst-a", "pod-b", "shard.infrared.reddit.com/key in (0,1)", list)
+	require.NoError(t, after.Sync(context.Background()))
+
+	assert.Equal(t, map[string]string{"0": "pod-b", "1": "pod-b"}, holders(t, c))
+}
+
 func TestSyncReleasesValuesThatFallOutOfTheSelector(t *testing.T) {
 	c := testClient()
-	wide := mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0", "1"))
+	wide := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0", "1"))
 	require.NoError(t, wide.Sync(context.Background()))
 	require.Equal(t, "pod-a", holders(t, c)["1"])
 
-	narrow := mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0", "1"))
+	narrow := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0", "1"))
 	require.NoError(t, narrow.Sync(context.Background()))
 
 	assert.Equal(t, "", holders(t, c)["1"], "a released value must be free for another shard at once")
@@ -224,23 +220,39 @@ func TestSyncReleasesValuesThatFallOutOfTheSelector(t *testing.T) {
 }
 
 func TestOwnershipBeforeFirstSyncIsPendingNotOwned(t *testing.T) {
-	o := mustOwner(t, testClient(), "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	o := mustOwner(t, testClient(), "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
 
 	assert.Equal(t, Pending, o.Ownership(obj("0", true)),
 		"reconciling before any lease is held would defeat the point of holding one")
 	assert.Equal(t, NotSelected, o.Ownership(obj("9", true)))
 }
 
+// Another controller partitioning different types shares the namespace but not the group, so its
+// value 0 and ours are different partitions. Both the Lease name and the group label differ,
+// because the name is prefixed with the group.
 func TestSyncIgnoresOtherGroupsLeases(t *testing.T) {
 	c := testClient()
-	foreign := valueLease("0", "0", "other-controller-pod", time.Second)
-	foreign.Labels[GroupLabelKey] = "a-different-controller"
+	foreign := valueLease("0", "inst-other", "other-controller-pod", time.Second)
+	foreign.Name = valueLeaseName("othertype", "0", false)
+	foreign.Labels[GroupLabelKey] = "othertype"
 	require.NoError(t, c.Create(context.Background(), foreign))
 
-	o := mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	o := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
 	require.NoError(t, o.Sync(context.Background()))
 
 	assert.Equal(t, "pod-a", holders(t, c)["0"], "another controller's leases are unrelated")
+
+	var untouched coordinationv1.Lease
+	require.NoError(t, c.Get(context.Background(),
+		client.ObjectKey{Namespace: "ns", Name: foreign.Name}, &untouched))
+	assert.Equal(t, "other-controller-pod", heldBy(&untouched), "and must not be pruned either")
+}
+
+// Only the leader of an instance may hold its values; a standby replica holding work it will not do
+// would strand that work.
+func TestOwnerIsLeaderGated(t *testing.T) {
+	o := mustOwner(t, testClient(), "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	assert.True(t, o.NeedLeaderElection())
 }
 
 func TestValueLeaseNamesAreReadableWhenTheyCanBe(t *testing.T) {

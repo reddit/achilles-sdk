@@ -33,8 +33,12 @@ type Config struct {
 	// Shard is the slice this process owns.
 	Shard *Shard
 
-	// Group identifies the controller, so peers of other controllers are ignored.
-	Group string
+	// Group scopes this advertisement to the controller partitioning these types.
+	Group Group
+
+	// Instance names this controller instance, i.e. its Deployment. Two instances sharing a name
+	// share a leader election lock, so one of them never runs.
+	Instance string
 
 	// Namespace is where advertisement Leases live.
 	Namespace string
@@ -75,10 +79,10 @@ func NewAdvertiser(c client.Client, cfg Config) *Advertiser {
 	return &Advertiser{client: c, cfg: cfg}
 }
 
-// LeaseName is the name of this shard's advertisement Lease. Pods serving the same shard share one
-// Lease and take over its holder identity in turn.
+// LeaseName is the name of this instance's advertisement Lease. Replicas of one instance share it
+// and take over its holder identity in turn.
 func (a *Advertiser) LeaseName() string {
-	return fmt.Sprintf("%s-shard-%s", a.cfg.Group, a.cfg.Shard.ID())
+	return instanceLeaseName(a.cfg.Group.Name, a.cfg.Instance)
 }
 
 // Advertise publishes this process's selector and warns when a peer's overlaps it.
@@ -87,12 +91,12 @@ func (a *Advertiser) LeaseName() string {
 // backed by a cache whose informers have not synced yet, and caching Leases cluster-wide would be
 // wasteful in any case, since the kubelet keeps one per node.
 func (a *Advertiser) Advertise(ctx context.Context) error {
-	overlap, err := a.Overlap(ctx)
+	overlap, err := a.Verify(ctx)
 	if err != nil {
 		return err
 	}
 
-	recordOverlap(a.cfg.Group, a.cfg.Shard.ID(), overlap != "")
+	recordOverlap(a.cfg.Group.Name, a.cfg.Shard.ID(), overlap != "")
 	if overlap != "" && a.cfg.Log != nil {
 		a.cfg.Log.Warnw("shard selector overlaps another shard of this controller, "+
 			"so which shard serves the overlapping values is arbitrary", "overlap", overlap)
@@ -101,17 +105,25 @@ func (a *Advertiser) Advertise(ctx context.Context) error {
 	return a.renew(ctx)
 }
 
-// Overlap describes what this shard and a live peer's would both match, or "" when every peer is
-// disjoint.
-func (a *Advertiser) Overlap(ctx context.Context) (string, error) {
+// Verify inspects live peers, returning a description of any selector overlap and an error for the
+// one misconfiguration that is not self-correcting.
+//
+// Overlapping selectors are merely unintended: Owner arbitrates over concrete values, so the
+// objects are still reconciled exactly once and only the assignment becomes arbitrary. Two
+// instances sharing a *name* is different in kind, because the name is the leader election lock:
+// they look to leader election like replicas of each other, so one wins, the other stands by
+// without ever starting a reconciler, and its shard's objects go unreconciled while its pod stays
+// healthy. Nothing downstream can recover from that, so it is fatal.
+func (a *Advertiser) Verify(ctx context.Context) (string, error) {
 	var leases coordinationv1.LeaseList
 	if err := a.client.List(ctx, &leases,
 		client.InNamespace(a.cfg.Namespace),
-		client.MatchingLabels{GroupLabelKey: a.cfg.Group, KindLabelKey: kindAdvertisement},
+		client.MatchingLabels{GroupLabelKey: a.cfg.Group.Name, KindLabelKey: kindAdvertisement},
 	); err != nil {
 		return "", fmt.Errorf("listing shard advertisements: %w", err)
 	}
 
+	overlap := ""
 	for i := range leases.Items {
 		lease := &leases.Items[i]
 		if expired(lease) {
@@ -120,16 +132,28 @@ func (a *Advertiser) Overlap(ctx context.Context) (string, error) {
 
 		raw := lease.Annotations[SelectorAnnotationKey]
 
-		if lease.Labels[IDLabelKey] == a.cfg.Shard.ID() {
-			// Pods of our own shard are expected during a rolling update, but only if they really
-			// are our shard. A matching ID with a different selector means two distinct shards are
-			// colliding on one identity, and so on one leader election lock.
+		// The group name drops the API group to stay readable, so two controllers partitioning
+		// same-named Kinds land in one group and would block each other's values.
+		if peerTypes := lease.Annotations[TypesAnnotationKey]; peerTypes != "" && peerTypes != a.cfg.Group.Types {
+			return "", fmt.Errorf(
+				"shard group %q is already used for the different types %q (held by %q), "+
+					"whose values this controller would contend for; the two controllers must not "+
+					"share a namespace",
+				a.cfg.Group.Name, peerTypes, holder(lease),
+			)
+		}
+
+		if lease.Labels[InstanceLabelKey] == a.cfg.Instance {
+			// Replicas of our own instance are expected during a rolling update, but only if they
+			// really are our instance. A different selector under our name means two Deployments
+			// were given one name, and so one leader election lock.
 			if raw != a.cfg.Shard.String() {
-				return fmt.Sprintf(
-					"shard ID %q is shared with the different selector %q (held by %q), "+
-						"so both contend for one leader election lock and one shard will not run",
-					a.cfg.Shard.ID(), raw, holder(lease),
-				), nil
+				return "", fmt.Errorf(
+					"instance name %q is already advertising the different selector %q (held by %q): "+
+						"two instances sharing a name share a leader election lock, so one shard "+
+						"would never run; give each instance the name of its own Deployment",
+					a.cfg.Instance, raw, holder(lease),
+				)
 			}
 			continue
 		}
@@ -144,15 +168,15 @@ func (a *Advertiser) Overlap(ctx context.Context) (string, error) {
 			continue
 		}
 
-		if conflict := a.cfg.Shard.Conflict(peer); conflict != "" {
-			return fmt.Sprintf(
-				"selector %q overlaps shard %q (selector %q, held by %q) on %s",
-				a.cfg.Shard, lease.Labels[IDLabelKey], raw, holder(lease), conflict,
-			), nil
+		if conflict := a.cfg.Shard.Conflict(peer); conflict != "" && overlap == "" {
+			overlap = fmt.Sprintf(
+				"selector %q overlaps instance %q (selector %q, held by %q) on %s",
+				a.cfg.Shard, lease.Labels[InstanceLabelKey], raw, holder(lease), conflict,
+			)
 		}
 	}
 
-	return "", nil
+	return overlap, nil
 }
 
 // renew creates or refreshes this shard's advertisement. Without periodic renewal the Lease goes
@@ -193,7 +217,8 @@ func (a *Advertiser) stamp(lease *coordinationv1.Lease, now metav1.MicroTime, se
 	if lease.Labels == nil {
 		lease.Labels = map[string]string{}
 	}
-	lease.Labels[GroupLabelKey] = a.cfg.Group
+	lease.Labels[GroupLabelKey] = a.cfg.Group.Name
+	lease.Labels[InstanceLabelKey] = a.cfg.Instance
 	lease.Labels[IDLabelKey] = a.cfg.Shard.ID()
 	lease.Labels[KindLabelKey] = kindAdvertisement
 
@@ -201,6 +226,7 @@ func (a *Advertiser) stamp(lease *coordinationv1.Lease, now metav1.MicroTime, se
 		lease.Annotations = map[string]string{}
 	}
 	lease.Annotations[SelectorAnnotationKey] = a.cfg.Shard.String()
+	lease.Annotations[TypesAnnotationKey] = a.cfg.Group.Types
 
 	identity := a.cfg.Identity
 	lease.Spec.HolderIdentity = &identity

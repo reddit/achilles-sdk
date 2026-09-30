@@ -16,7 +16,7 @@ func TestSkipIsNoopWhenShardingIsDisabled(t *testing.T) {
 
 func TestSkipDistinguishesAnotherShardsWorkFromAnUnacquiredValue(t *testing.T) {
 	c := testClient()
-	o := mustOwner(t, c, "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0", "1"))
+	o := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0", "1"))
 	ctx := NewContext(context.Background(), o)
 
 	// Before the first sync nothing is held, so a selected value is worth revisiting.

@@ -39,8 +39,13 @@ type OwnerConfig struct {
 	// Shard is the slice this instance selects.
 	Shard *Shard
 
-	// Group identifies the controller, so that leases of other controllers are left alone.
-	Group string
+	// Group scopes ownership to the controller partitioning these types, so that leases of other
+	// controllers are left alone.
+	Group Group
+
+	// Instance names this controller instance, i.e. its Deployment. Leader election elects one
+	// leader per instance, which is what makes takeover of our own instance's leases safe.
+	Instance string
 
 	// Namespace is where ownership Leases live.
 	Namespace string
@@ -162,7 +167,7 @@ func (o *Owner) Sync(ctx context.Context) error {
 	var contested, unowned int
 
 	for _, ref := range inventory.refs() {
-		name := valueLeaseName(o.cfg.Group, ref.value, ref.unlabeled)
+		name := valueLeaseName(o.cfg.Group.Name, ref.value, ref.unlabeled)
 		live.Insert(name)
 
 		state, err := o.reconcileLease(ctx, name, ref)
@@ -198,7 +203,7 @@ func (o *Owner) Sync(ctx context.Context) error {
 		return err
 	}
 
-	recordOwnership(o.cfg.Group, o.cfg.Shard.ID(), len(held.values), contested, unowned)
+	recordOwnership(o.cfg.Group.Name, o.cfg.Shard.ID(), len(held.values), contested, unowned)
 	return nil
 }
 
@@ -263,13 +268,15 @@ func (o *Owner) reconcileLease(ctx context.Context, name string, ref valueRef) (
 
 // mayTakeOver reports whether this instance can claim a lease it does not hold.
 //
-// A lease labelled with this shard's ID belongs to a predecessor of this very instance: leader
-// election guarantees one leader per shard at a time, so waiting out its expiry would only add
-// failover latency.
+// A lease labelled with our own instance belongs to a predecessor leader of this very Deployment:
+// leader election guarantees one leader per instance at a time, so waiting out its expiry would only
+// add failover latency. Keying on the instance rather than the shard also keeps a selector edit a
+// clean rolling update, since the incoming pod reclaims its predecessor's values immediately even
+// though its shard ID has changed.
 func (o *Owner) mayTakeOver(lease *coordinationv1.Lease) bool {
 	return heldBy(lease) == "" ||
 		expired(lease) ||
-		lease.Labels[IDLabelKey] == o.cfg.Shard.ID()
+		lease.Labels[InstanceLabelKey] == o.cfg.Instance
 }
 
 func (o *Owner) stateOf(lease *coordinationv1.Lease, selected bool) leaseState {
@@ -326,13 +333,14 @@ func (o *Owner) stampValue(lease *coordinationv1.Lease, ref valueRef, identity s
 	if lease.Labels == nil {
 		lease.Labels = map[string]string{}
 	}
-	lease.Labels[GroupLabelKey] = o.cfg.Group
+	lease.Labels[GroupLabelKey] = o.cfg.Group.Name
 	lease.Labels[KindLabelKey] = kindValue
 
 	if lease.Annotations == nil {
 		lease.Annotations = map[string]string{}
 	}
 	lease.Annotations[ValueAnnotationKey] = ref.value
+	lease.Annotations[TypesAnnotationKey] = o.cfg.Group.Types
 
 	now := metav1.NewMicroTime(time.Now())
 	seconds := int32(o.cfg.LeaseDuration.Seconds())
@@ -340,13 +348,15 @@ func (o *Owner) stampValue(lease *coordinationv1.Lease, ref valueRef, identity s
 	lease.Spec.RenewTime = &now
 
 	if identity == "" {
-		// Released, so the shard label must go too: it is what permits immediate takeover.
+		// Released, so the instance label must go too: it is what permits immediate takeover.
+		delete(lease.Labels, InstanceLabelKey)
 		delete(lease.Labels, IDLabelKey)
 		lease.Spec.HolderIdentity = nil
 		lease.Spec.AcquireTime = nil
 		return
 	}
 
+	lease.Labels[InstanceLabelKey] = o.cfg.Instance
 	lease.Labels[IDLabelKey] = o.cfg.Shard.ID()
 	if heldBy(lease) != identity {
 		lease.Spec.AcquireTime = &now
@@ -378,7 +388,7 @@ func (o *Owner) listValueLeases(ctx context.Context) ([]coordinationv1.Lease, er
 	var leases coordinationv1.LeaseList
 	if err := o.client.List(ctx, &leases,
 		client.InNamespace(o.cfg.Namespace),
-		client.MatchingLabels{GroupLabelKey: o.cfg.Group, KindLabelKey: kindValue},
+		client.MatchingLabels{GroupLabelKey: o.cfg.Group.Name, KindLabelKey: kindValue},
 	); err != nil {
 		return nil, fmt.Errorf("listing ownership leases: %w", err)
 	}

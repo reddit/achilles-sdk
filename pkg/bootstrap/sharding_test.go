@@ -20,10 +20,10 @@ func mustParse(t *testing.T, raw string) *shard.Shard {
 
 func shardedOptions() *Options {
 	return &Options{
-		ShardSelector:    "shard.infrared.reddit.com/key=a",
-		ShardedTypes:     []client.Object{&corev1.ConfigMap{}},
-		LeaderElectionID: "ctl",
-		LeaderElection:   true,
+		ShardSelector:  "shard.infrared.reddit.com/key=a",
+		ShardedTypes:   []client.Object{&corev1.ConfigMap{}},
+		InstanceName:   "ctl-shard-a",
+		LeaderElection: true,
 	}
 }
 
@@ -41,12 +41,22 @@ func TestResolveShardRequiresShardedTypes(t *testing.T) {
 	assert.ErrorContains(t, err, "sharded-types")
 }
 
-func TestResolveShardRequiresLeaderElectionID(t *testing.T) {
+// The lock is named after the Deployment, so a separately configured lock name would be a second
+// source of truth able to disagree with it.
+func TestResolveShardRejectsLeaderElectionID(t *testing.T) {
 	opts := shardedOptions()
-	opts.LeaderElectionID = ""
+	opts.LeaderElectionID = "ctl"
 
 	_, err := resolveShard(opts)
-	assert.ErrorContains(t, err, "leader-election-id")
+	assert.ErrorContains(t, err, "leader-election-id must not be set")
+}
+
+func TestResolveShardRequiresInstanceName(t *testing.T) {
+	opts := shardedOptions()
+	opts.InstanceName = ""
+
+	_, err := resolveShard(opts)
+	assert.ErrorContains(t, err, "instance-name")
 }
 
 // Two replicas of one shard both claiming its values would defeat the point of claiming them, and
@@ -74,17 +84,24 @@ func TestResolveShardSucceeds(t *testing.T) {
 	assert.Equal(t, "a", s.ID())
 }
 
-func TestShardedLeaderElectionID(t *testing.T) {
-	assert.Equal(t, "ctl", shardedLeaderElectionID("ctl", nil))
-	assert.Equal(t, "ctl-a", shardedLeaderElectionID("ctl", mustParse(t, "shard.infrared.reddit.com/key=a")))
-	assert.Equal(t, "ctl-catchall", shardedLeaderElectionID("ctl", mustParse(t, "!shard.infrared.reddit.com/key")))
+func TestLeaderElectionIDUsesTheConfiguredLockWhenUnsharded(t *testing.T) {
+	assert.Equal(t, "ctl", leaderElectionID(&Options{LeaderElectionID: "ctl"}, nil))
 }
 
-// Each shard must hold a distinct lock, or exactly one replica across all shards would be active.
-func TestShardedLeaderElectionIDsAreDistinct(t *testing.T) {
-	a := shardedLeaderElectionID("ctl", mustParse(t, "shard.infrared.reddit.com/key=a"))
-	b := shardedLeaderElectionID("ctl", mustParse(t, "shard.infrared.reddit.com/key=b"))
-	assert.NotEqual(t, a, b)
+// Each shard is its own Deployment, so its lock is that Deployment's name. Kubernetes already
+// guarantees those are distinct in a namespace, which no derivation from the selector can.
+func TestLeaderElectionIDUsesTheInstanceNameWhenSharded(t *testing.T) {
+	opts := shardedOptions()
+	assert.Equal(t, "ctl-shard-a", leaderElectionID(opts, mustParse(t, opts.ShardSelector)))
+}
+
+// Editing a selector must not move the lock, or the outgoing and incoming pods of one shard would
+// briefly hold different locks and both act as leader.
+func TestLeaderElectionIDIsIndependentOfTheSelector(t *testing.T) {
+	opts := shardedOptions()
+	before := leaderElectionID(opts, mustParse(t, "shard.infrared.reddit.com/key=a"))
+	after := leaderElectionID(opts, mustParse(t, "shard.infrared.reddit.com/key in (a,b)"))
+	assert.Equal(t, before, after)
 }
 
 func TestShardNamespacePrefersExplicitOption(t *testing.T) {

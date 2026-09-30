@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/go-logr/zapr"
@@ -101,6 +102,16 @@ type Options struct {
 	// sharded binary needs its root type listed here.
 	ShardedTypes []client.Object
 
+	// InstanceName names this controller instance, and must be the name of its own Deployment.
+	// Required when ShardSelector is set; defaults from the INSTANCE_NAME environment variable.
+	//
+	// It names the leader election lock, so two instances sharing it are treated by leader
+	// election as replicas of each other: one wins and the other stands by without ever starting a
+	// reconciler, leaving its shard's objects unreconciled. Taking the name from the Deployment
+	// makes that impossible by construction, since Kubernetes already guarantees Deployment names
+	// are unique in a namespace.
+	InstanceName string
+
 	// Determines whether the controller should use leader election (a form of active-passive HA).
 	LeaderElection bool
 
@@ -144,6 +155,7 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 	flags.DurationVar(&o.SyncPeriod, "sync-period", 10*time.Hour, "Minimum frequency at which all controllers will perform a reconciliation.")
 
 	flags.StringVar(&o.ShardSelector, "shard-selector", "", fmt.Sprintf("Restricts this instance to the objects matching the given selector, which must reference only %q. Use the negated form to own everything unlabeled. Empty disables sharding", shard.DefaultKey))
+	flags.StringVar(&o.InstanceName, "instance-name", os.Getenv("INSTANCE_NAME"), "Name of this controller instance, which must be the name of its own Deployment. Names the leader election lock. Required when shard-selector is set")
 
 	flags.BoolVar(&o.LeaderElection, "leader-election", false, "Enables leader election for the controller (a form of active-passive HA)")
 	flags.StringVar(&o.LeaderElectionID, "leader-election-id", "", "Name of the resource that leader election will use for holding the leader lock")
@@ -237,7 +249,7 @@ func buildManager(
 			Logger:                  zapr.NewLogger(log.Desugar()),
 			Cache:                   cacheOptions(opts),
 			LeaderElection:          opts.LeaderElection,
-			LeaderElectionID:        shardedLeaderElectionID(opts.LeaderElectionID, shardCfg),
+			LeaderElectionID:        leaderElectionID(opts, shardCfg),
 			LeaderElectionNamespace: opts.LeaderElectionNamespace,
 			RenewDeadline:           &opts.LeaderElectionRenewDeadline,
 			LeaseDuration:           &opts.LeaderElectionLeaseDuration,

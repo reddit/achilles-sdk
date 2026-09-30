@@ -25,6 +25,15 @@ const (
 	// ValueAnnotationKey records the shard value a Lease confers, which the Lease name only
 	// approximates once a value is long enough or odd enough to need hashing.
 	ValueAnnotationKey = "shard.infrared.reddit.com/value"
+
+	// InstanceLabelKey names the controller instance (its Deployment), which is the unit leader
+	// election elects within. It is what permits immediate takeover: a Lease bearing our own
+	// instance was held by a predecessor leader of this very Deployment.
+	InstanceLabelKey = "shard.infrared.reddit.com/instance"
+
+	// TypesAnnotationKey records the partitioned types, so that two controllers whose Kinds happen
+	// to collide do not silently block each other's values.
+	TypesAnnotationKey = "shard.infrared.reddit.com/types"
 )
 
 // valueRef identifies one partition of the objects: either a concrete value of the shard label, or
@@ -104,6 +113,19 @@ func valueLeaseName(group, value string, unlabeled bool) string {
 		id = "h" + hex.EncodeToString(sum[:])[:10]
 	}
 	return fmt.Sprintf("%s-value-%s", group, id)
+}
+
+// instanceLeaseName names the Lease advertising one controller instance's selector. Keyed on the
+// instance rather than the shard so that two Deployments sharing an instance name — which means
+// sharing a leader election lock, and so one of them never running — is detectable.
+func instanceLeaseName(group, instance string) string {
+	name := fmt.Sprintf("%s-instance-%s", group, instance)
+	if isDNSSubdomain(name) {
+		return name
+	}
+
+	sum := sha256.Sum256([]byte(instance))
+	return fmt.Sprintf("%s-instance-h%s", group, hex.EncodeToString(sum[:])[:10])
 }
 
 func isDNSSubdomain(name string) bool {

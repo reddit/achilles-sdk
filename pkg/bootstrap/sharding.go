@@ -23,8 +23,11 @@ import (
 const (
 	errShardTypesUnset = "sharded-types must be set when shard-selector is set, otherwise no object " +
 		"would ever be assigned to a shard"
-	errShardLeaderElectionIDUnset = "leader-election-id must be set when shard-selector is set, " +
-		"since it names the per-shard leader election lock and scopes the shard's Leases"
+	errShardInstanceUnset = "instance-name must be set when shard-selector is set, and must be the " +
+		"name of this controller's own Deployment, since it names the leader election lock that " +
+		"separates this shard from the others"
+	errShardLeaderElectionIDSet = "leader-election-id must not be set when shard-selector is set: " +
+		"the lock is named after instance-name instead, so that shards cannot share one lock"
 	errShardLeaderElectionDisabled = "leader-election must be enabled when shard-selector is set, " +
 		"since it is what keeps two replicas of one shard from both claiming its values"
 )
@@ -43,8 +46,11 @@ func resolveShard(o *Options) (*shard.Shard, error) {
 	if len(o.ShardedTypes) == 0 {
 		return nil, errors.New(errShardTypesUnset)
 	}
-	if o.LeaderElectionID == "" {
-		return nil, errors.New(errShardLeaderElectionIDUnset)
+	if o.InstanceName == "" {
+		return nil, errors.New(errShardInstanceUnset)
+	}
+	if o.LeaderElectionID != "" {
+		return nil, errors.New(errShardLeaderElectionIDSet)
 	}
 	if !o.LeaderElection {
 		return nil, errors.New(errShardLeaderElectionDisabled)
@@ -53,14 +59,17 @@ func resolveShard(o *Options) (*shard.Shard, error) {
 	return s, nil
 }
 
-// shardedLeaderElectionID scopes the leader election lock to the shard, so that each shard elects a
-// leader among its own replicas. Sharing one lock would instead elect one leader across all shards,
-// leaving every other shard's objects unreconciled while its pods stayed healthy.
-func shardedLeaderElectionID(id string, s *shard.Shard) string {
+// leaderElectionID names the lock the manager elects on.
+//
+// A sharded controller elects on its instance name, i.e. its own Deployment name, so each shard
+// elects a leader among its own replicas. Deriving the name from the selector instead would make it
+// change whenever the selector is edited, briefly leaving the outgoing and incoming pods of one
+// shard holding different locks and both acting as leader.
+func leaderElectionID(o *Options, s *shard.Shard) string {
 	if s == nil {
-		return id
+		return o.LeaderElectionID
 	}
-	return fmt.Sprintf("%s-%s", id, s.ID())
+	return o.InstanceName
 }
 
 // setupSharding advertises this shard's selector and starts the loop that acquires ownership of the
@@ -91,9 +100,19 @@ func setupSharding(
 		return nil, fmt.Errorf("building uncached client for shard leases: %w", err)
 	}
 
+	gvks, err := shardedGVKs(mgr.GetScheme(), opts.ShardedTypes)
+	if err != nil {
+		return nil, err
+	}
+	group, err := shard.GroupFor(gvks)
+	if err != nil {
+		return nil, err
+	}
+
 	advertiser := shard.NewAdvertiser(direct, shard.Config{
 		Shard:     s,
-		Group:     opts.LeaderElectionID,
+		Group:     group,
+		Instance:  opts.InstanceName,
 		Namespace: namespace,
 		Identity:  identity,
 		Log:       log,
@@ -105,17 +124,13 @@ func setupSharding(
 		return nil, fmt.Errorf("registering shard advertisement renewal: %w", err)
 	}
 
-	list, err := inventoryFunc(mgr, s.Key(), opts.ShardedTypes)
-	if err != nil {
-		return nil, err
-	}
-
 	owner := shard.NewOwner(direct, shard.OwnerConfig{
 		Shard:     s,
-		Group:     opts.LeaderElectionID,
+		Group:     group,
+		Instance:  opts.InstanceName,
 		Namespace: namespace,
 		Identity:  identity,
-		List:      list,
+		List:      inventoryFunc(mgr, s.Key(), gvks),
 		Log:       log,
 	})
 	if err := mgr.Add(owner); err != nil {
@@ -125,9 +140,24 @@ func setupSharding(
 	log.Infow("sharding enabled",
 		"selector", s.String(),
 		"shard", s.ID(),
-		"leaderElectionID", shardedLeaderElectionID(opts.LeaderElectionID, s),
+		"instance", opts.InstanceName,
+		"group", group.Name,
 	)
 	return owner, nil
+}
+
+// shardedGVKs resolves the declared sharded types, which both scope the shard's Leases and bound
+// the inventory scan.
+func shardedGVKs(scheme *runtime.Scheme, shardedTypes []client.Object) ([]schema.GroupVersionKind, error) {
+	gvks := make([]schema.GroupVersionKind, 0, len(shardedTypes))
+	for _, obj := range shardedTypes {
+		gvk, err := apiutil.GVKForObject(obj, scheme)
+		if err != nil {
+			return nil, fmt.Errorf("resolving GVK for sharded type %T: %w", obj, err)
+		}
+		gvks = append(gvks, gvk)
+	}
+	return gvks, nil
 }
 
 // inventoryFunc reports which shard values objects actually carry, which is the set ownership is
@@ -136,15 +166,11 @@ func setupSharding(
 // It reads the manager's cache, which already holds these types because the controllers watch them,
 // so a scan costs no API traffic. The scan is proportional to the number of objects, not to the
 // number of shards, and it runs on every ownership sync.
-func inventoryFunc(mgr manager.Manager, key string, shardedTypes []client.Object) (shard.ListFunc, error) {
+func inventoryFunc(mgr manager.Manager, key string, gvks []schema.GroupVersionKind) shard.ListFunc {
 	scheme := mgr.GetScheme()
 
-	listGVKs := make([]schema.GroupVersionKind, 0, len(shardedTypes))
-	for _, obj := range shardedTypes {
-		gvk, err := apiutil.GVKForObject(obj, scheme)
-		if err != nil {
-			return nil, fmt.Errorf("resolving GVK for sharded type %T: %w", obj, err)
-		}
+	listGVKs := make([]schema.GroupVersionKind, 0, len(gvks))
+	for _, gvk := range gvks {
 		listGVKs = append(listGVKs, gvk.GroupVersion().WithKind(gvk.Kind+"List"))
 	}
 
@@ -181,7 +207,7 @@ func inventoryFunc(mgr manager.Manager, key string, shardedTypes []client.Object
 		}
 
 		return inventory, nil
-	}, nil
+	}
 }
 
 // shardNamespace is where a shard's Leases live, mirroring how leader election picks its namespace.
