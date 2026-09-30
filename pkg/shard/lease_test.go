@@ -115,6 +115,26 @@ func TestClaimFailsOnSameIDWithDifferentSelector(t *testing.T) {
 	assert.ErrorContains(t, err, "different selector")
 }
 
+// Introducing a new shard value means carving it out of whichever live shard currently absorbs it,
+// and a negated shard absorbs every value it does not exclude. Both the narrowed shard and the new
+// one therefore overlap the shard still running, so neither can be rolled out underneath it.
+func TestClaimFailsWhenCarvingOutOfALiveShard(t *testing.T) {
+	for name, selector := range map[string]string{
+		"the new shard itself":        "shard.infrared.reddit.com/key=2",
+		"narrowing the negated shard": "shard.infrared.reddit.com/key notin (0,1,2)",
+		"widening the negated shard":  "shard.infrared.reddit.com/key notin (0)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			live := peerLease("test-controller-shard-not-0-1", "not-0-1",
+				"shard.infrared.reddit.com/key notin (0,1)", time.Second)
+			a, err := advertiser(testClient(live), selector)
+			require.NoError(t, err)
+
+			assert.ErrorContains(t, a.Claim(context.Background()), "overlap")
+		})
+	}
+}
+
 func TestClaimIgnoresStalePeer(t *testing.T) {
 	c := testClient(peerLease("peer", "h123", "shard.infrared.reddit.com/key in (a,b)", time.Hour))
 	a, err := advertiser(c, "shard.infrared.reddit.com/key=a")

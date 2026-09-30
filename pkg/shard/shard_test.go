@@ -137,6 +137,9 @@ func TestSelectorMatchesExpectedObjects(t *testing.T) {
 		"catch-all rejects labeled":    {"!shard.infrared.reddit.com/key", map[string]string{DefaultKey: "a"}, false},
 		// The semantics that make a single-selector catch-all possible at all.
 		"notin matches unlabeled": {"shard.infrared.reddit.com/key notin (a)", nil, true},
+		// A negated shard absorbs shard values that did not exist when it was deployed, so a new
+		// value never lands with nobody until it is deliberately carved out.
+		"notin absorbs an unforeseen value": {"shard.infrared.reddit.com/key notin (0,1)", map[string]string{DefaultKey: "2"}, true},
 	}
 
 	for name, tc := range tests {

@@ -78,12 +78,42 @@ Two consequences worth knowing:
 
 - The check records what a process is *running*, so it cannot see a peer that crashed before
   advertising. Catching that belongs in a lint over your manifests.
+- It runs once, at startup. A conflict is caught by whichever instance arrives second; an instance
+  already running never re-evaluates its peers. An advertisement stops being renewed when its
+  process exits and is ignored once it expires, but the Lease object itself is left behind, so stale
+  advertisements from retired shards accumulate until something prunes them.
 - A genuine overlap fails before health probes are served, so the rollout stalls rather than
   crash-looping into service. Renaming a shard is therefore a drain-then-deploy operation, not a
   rolling update.
 
 Pass `--disable-shard-overlap-check` to skip it, which is mainly useful when running a controller
 out of cluster against a cluster that has live shards.
+
+## Adding a shard
+
+New shard *values* need no action. A negated shard absorbs every value it does not exclude, including
+values that did not exist when it was deployed, so labelling objects with a brand new value simply
+leaves them with the negated shard. Nothing is ever orphaned by the appearance of a value.
+
+Adding a new *instance* to own some of those values is the harder direction, because that slice is by
+definition already owned by whichever live shard absorbs it. Both halves of the change overlap the
+shard still running — the narrowed selector because it still shares every value it did not newly
+exclude, and the new shard because its values are exactly the ones being taken away — so neither can
+be rolled out underneath it. The incoming pod detects the overlap and refuses to start, and because
+that happens before health probes are served, the rollout stalls with the old pod still serving.
+
+Two ways through, and which you want depends on whether you would rather have a gap or a brief
+double-reconcile:
+
+- **Stop the shard being carved, then deploy both selectors.** Its slice goes unreconciled until the
+  replacements come up. Existing objects are untouched during the gap; only changes go unprocessed.
+- **Deploy the new topology with `--disable-shard-overlap-check`, then remove the flag.** Two
+  instances briefly reconcile the overlapping slice. For identical builds they render the same
+  children and converge on the same result, so the cost is duplicated work and some write conflicts
+  rather than divergence — but `status` can flap between them if the builds differ.
+
+The same applies to any change of an existing shard's selector, not just to adding one: widening,
+narrowing, and renaming are all drain-then-deploy.
 
 ## Rolling it out to an existing controller
 
