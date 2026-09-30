@@ -26,10 +26,10 @@ mechanism does not.
 
 ## Enabling it
 
-Sharding is opt-in per controller, and needs three things beyond the flag.
+Sharding is opt-in per controller, and needs three things beyond the selector.
 
-Declare the root types being partitioned. These are the types whose labels are scanned to discover
-the values in use, and whose reconciliation is gated on ownership:
+**Declare the root types being partitioned.** These are the types whose labels are scanned to
+discover the values in use, and whose reconciliation is gated on ownership:
 
 ```go
 opts := &bootstrap.Options{
@@ -41,13 +41,26 @@ opts.AddToFlags(flags)
 > A root type left out of this list is reconciled by **every** shard. If your binary registers
 > several controllers, every one of their root types belongs here.
 
-Set `--leader-election-id`. The SDK appends the shard to it, so each shard elects a leader among its
-own replicas — do **not** vary it per shard yourself. If every shard shared one lock, exactly one
-replica across all shards would be active and every other shard's objects would go unreconciled
-while its pods stayed healthy.
+**Run each shard as its own Deployment, and give the SDK that Deployment's name.** Every shard needs
+its own leader election lock, and the lock is named after this:
 
-Set `--leader-election`. Only the leader of a shard claims its values, so without it two replicas of
-one shard would both claim and both reconcile. The SDK refuses to start without it.
+```yaml
+env:
+  - name: INSTANCE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.labels['app']   # must equal the Deployment name
+```
+
+`--instance-name` overrides it. The SDK refuses to start without one, and refuses to start if
+`--leader-election-id` is also set — the lock has exactly one source of truth.
+
+The Deployment name is used rather than anything derived from the selector because Kubernetes
+already guarantees Deployment names are unique in a namespace. Two shards therefore cannot share a
+lock, and editing a selector does not rename the lock.
+
+**Set `--leader-election`.** Only the leader of a shard claims its values, so without it two
+replicas of one shard would both claim and both reconcile. The SDK refuses to start without it.
 
 ## Assigning objects to shards
 
@@ -81,11 +94,29 @@ This is the case a selector-only scheme cannot get right. `notin (0,1)` and `not
 a clean split of the values in use, but both claim every value neither excludes, so a new value 4
 belongs to both. Arbitrating over the concrete value means exactly one of them serves it.
 
+## Two shards must never share a name
+
+This is the one sharding misconfiguration the SDK still refuses to run on, because it is the only
+one nothing downstream can recover from. Leader election compares nothing but the lock name, so two
+Deployments given one instance name look to it like ordinary replicas of each other: one wins, the
+other stands by without ever starting a reconciler, and its shard's objects go unreconciled while
+its pod stays `Running` and passes its probes.
+
+Taking the name from the Deployment makes this near-impossible, but a copied manifest can still get
+it wrong, so a peer advertising our instance name with a different selector is fatal:
+
+```
+instance name "application-controller-workload-standard" is already advertising the different
+selector "shard.infrared.reddit.com/key in (0,1)" (held by "peer-pod"): two instances sharing a
+name share a leader election lock, so one shard would never run; give each instance the name of
+its own Deployment
+```
+
 ## Overlapping selectors
 
 Overlap is safe but almost never intended, so the SDK reports it without refusing to run. Each
-instance publishes its selector in an advertisement Lease, and warns when a different shard of the
-same controller advertises an overlapping one:
+instance publishes its selector in an advertisement Lease, and warns when a different instance of
+the same controller advertises an overlapping one:
 
 ```
 shard selector overlaps another shard of this controller, so which shard serves the overlapping
@@ -102,20 +133,30 @@ The warning is emitted at startup only, and reflects what peers are *running* ra
 manifests declare, so it cannot see a peer that crashed before advertising.
 `achilles_shard_selector_overlap` carries the same signal as a gauge.
 
-## Shard identifiers
+## What the Leases are called
 
-Each shard gets a short identifier derived from the values its selector claims, which names its
-advertisement Lease and its leader election lock. It spells the value set out where it can, so
-`key in (0,1)` becomes `0-1`, `key notin (0,1)` becomes `not-0-1`, and `!key` becomes `catchall`;
-anything without a short DNS-safe rendering falls back to a hash.
+All of a controller's shard Leases are prefixed with a group derived from the **types it
+partitions** — a controller sharding `Application` uses `application-…`. Every shard of that
+controller must contend for the same value Leases, while an unrelated controller in the namespace
+must not, and "what is being partitioned" is exactly that scope. Nothing needs configuring.
 
-Distinct selectors can render to the same identifier, which means they would also share a leader
-election lock and one of them would never run. That case is reported as an overlap.
+| Lease | Purpose |
+| --- | --- |
+| `<group>-value-<value>` | Ownership of one concrete shard value |
+| `<group>-unlabeled` | Ownership of the objects carrying no shard label |
+| `<group>-instance-<instance>` | One instance's advertised selector |
+| `<instance>` | Leader election, one per shard |
+
+Values that are not valid object names (uppercase, underscores, overly long) are hashed. Shards also
+carry a short readable ID derived from their value set (`0-1`, `not-0-1`, `catchall`, `any`), which
+appears as a label and in logs but no longer names anything that must be unique.
 
 ## Adding, changing, or removing a shard
 
 An ordinary rolling update. Values move between shards as Leases are released and acquired, so there
-is no drain-then-deploy step and no window in which two instances reconcile the same object.
+is no drain-then-deploy step and no window in which two instances reconcile the same object. Editing
+a shard's selector is also a rolling update: the incoming pod is the same instance as the outgoing
+one, so it holds the same leader election lock and reclaims its predecessor's values immediately.
 
 Removing a shard is the one case needing care: its values are released, and if no remaining selector
 claims them, their objects go unreconciled with nothing reporting an error. Always leave a catch-all
@@ -127,7 +168,7 @@ running.
 | --- | --- |
 | `achilles_shard_values_unowned` | A value in use whose Lease no instance holds. Its objects are reconciled by nobody. The one to page on. |
 | `achilles_shard_values_contested` | This instance claims a value another shard holds. Correct but unintended; the selectors overlap. |
-| `achilles_shard_selector_overlap` | Another shard advertises an overlapping selector. |
+| `achilles_shard_selector_overlap` | Another instance advertises an overlapping selector. |
 | `achilles_shard_reconciles_skipped_total` | Reconciles skipped for lack of ownership, by reason. |
 
 Mutual exclusion is as strong as Kubernetes leader election and no stronger. Leases carry no fencing
