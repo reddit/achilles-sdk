@@ -25,14 +25,14 @@ import (
 // reconciled rather than merely created.
 const reconciledCondition = api.ConditionType("Reconciled")
 
-// shardedContext returns a context whose instance serves "a", optionally having claimed it.
-func shardedContext(t *testing.T, claim bool) context.Context {
+// shardedOwner returns an Owner for an instance serving "a", which claims the value on first Sync.
+func shardedOwner(t *testing.T) *shard.Owner {
 	t.Helper()
 
 	s, err := shard.Parse(shard.DefaultKey, []string{"a"})
 	require.NoError(t, err)
 
-	owner := shard.NewOwner(fake.NewClientBuilder().Build(), shard.OwnerConfig{
+	return shard.NewOwner(fake.NewClientBuilder().Build(), shard.OwnerConfig{
 		Shard:     s,
 		Instance:  "inst-a",
 		Namespace: "ns",
@@ -41,6 +41,13 @@ func shardedContext(t *testing.T, claim bool) context.Context {
 			return shard.Inventory{}, nil
 		},
 	})
+}
+
+// shardedContext returns a context whose instance serves "a", optionally having claimed it.
+func shardedContext(t *testing.T, claim bool) context.Context {
+	t.Helper()
+
+	owner := shardedOwner(t)
 	if claim {
 		require.NoError(t, owner.Sync(context.Background()))
 	}
@@ -141,6 +148,30 @@ func TestReconcileDefersUntilTheValueIsClaimed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, shard.PendingRequeueInterval, res.RequeueAfter)
 	assert.NotContains(t, conditionTypes(t, c, obj), reconciledCondition)
+}
+
+// The deferred reconcile has to converge: claiming the value is enough to make the requeued object
+// reconcile, with nothing else prompting it.
+func TestReconcileConvergesOnceTheValueIsClaimed(t *testing.T) {
+	obj := claimWithValue("a")
+	r, c := shardedReconciler(t, obj)
+
+	owner := shardedOwner(t)
+	ctx := shard.NewContext(context.Background(), owner)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(obj)}
+
+	res, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, shard.PendingRequeueInterval, res.RequeueAfter)
+	require.NotContains(t, conditionTypes(t, c, obj), reconciledCondition)
+
+	require.NoError(t, owner.Sync(context.Background()))
+
+	res, err = r.Reconcile(ctx, req)
+
+	require.NoError(t, err)
+	assert.True(t, res.IsZero())
+	assert.Contains(t, conditionTypes(t, c, obj), reconciledCondition)
 }
 
 // An unsharded controller must behave exactly as it did before sharding existed.
