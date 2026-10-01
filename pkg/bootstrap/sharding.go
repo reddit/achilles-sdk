@@ -195,7 +195,9 @@ func inventoryFunc(mgr manager.Manager, key string, gvks []schema.GroupVersionKi
 				if !ok {
 					return fmt.Errorf("%T is not a client.Object", item)
 				}
-				if value, labelled := o.GetLabels()[key]; labelled {
+				// An empty value counts as unlabeled, matching how ownership reads it: neither
+				// can be declared on an instance, so neither is reconcilable.
+				if value := o.GetLabels()[key]; value != "" {
 					inventory.Values.Insert(value)
 				} else {
 					inventory.Unlabeled = true

@@ -6,9 +6,10 @@
 // instance still watches and caches every object, and ignores the ones whose value it does not
 // manage. Exclusivity is settled at run time by Owner, which holds a Lease per managed value.
 //
-// A value no instance is configured with is reconciled by nobody, deliberately: assignment is an
-// operator decision, so a value appearing at run time is reported rather than guessed at. See
-// achilles_shard_values_ignored.
+// Every shard value must be declared on some instance. A value no instance declares — including
+// the absent value, i.e. an object carrying no shard label — is reconciled by nobody, deliberately:
+// assignment is an operator decision, so an undeclared value is reported rather than guessed at.
+// See achilles_shard_values_ignored.
 //
 // The label itself is applied by the platform, not by the SDK; the SDK only reads it, and
 // propagates it from a root object onto the children that object manages.
@@ -28,29 +29,18 @@ import (
 // DefaultKey is the label key that assigns an object to a shard.
 const DefaultKey = "shard.infrared.reddit.com/key"
 
-// UnlabeledValue is the reserved value naming the partition of objects carrying no shard label.
-//
-// Spelled with a leading "@" so it cannot collide with a real value: Kubernetes label values are
-// alphanumeric with dashes, dots, and underscores, so "@unlabeled" is not one.
-const UnlabeledValue = "@unlabeled"
-
-// catchAllID renders UnlabeledValue into the DNS-safe names derived from a shard's values.
-const catchAllID = "catchall"
-
 // maxReadableIDLength keeps a spelled-out ID well inside the 63-character DNS label limit, leaving
 // room for the prefixes callers add.
 const maxReadableIDLength = 40
 
-// Shard is the slice of objects owned by one controller instance: the set of concrete shard values
-// it manages, plus whether it manages the unlabeled partition.
+// Shard is the slice of objects owned by one controller instance: the concrete shard values it was
+// configured with.
 type Shard struct {
-	key       string
-	values    sets.Set[string]
-	unlabeled bool
+	key    string
+	values sets.Set[string]
 }
 
-// Parse builds a Shard from the concrete shard values an instance manages, e.g. {"0", "1"}, or
-// {UnlabeledValue} for the instance managing everything that carries no shard label.
+// Parse builds a Shard from the concrete shard values an instance manages, e.g. {"0", "1"}.
 //
 // An empty list returns a nil Shard, meaning sharding is disabled. Values are deduplicated, and
 // each must be a legal label value so that a managed value can always be matched against a real
@@ -63,17 +53,13 @@ func Parse(key string, values []string) (*Shard, error) {
 		if value == "" {
 			continue
 		}
-		if value == UnlabeledValue {
-			s.unlabeled = true
-			continue
-		}
 		if errs := validation.IsValidLabelValue(value); len(errs) > 0 {
 			return nil, fmt.Errorf("shard value %q is not a valid label value: %s", value, strings.Join(errs, "; "))
 		}
 		s.values.Insert(value)
 	}
 
-	if s.values.Len() == 0 && !s.unlabeled {
+	if s.values.Len() == 0 {
 		return nil, nil
 	}
 	return s, nil
@@ -82,15 +68,8 @@ func Parse(key string, values []string) (*Shard, error) {
 // Key returns the label key the shard is defined over.
 func (s *Shard) Key() string { return s.key }
 
-// Values returns the managed values in canonical order, with UnlabeledValue included when the
-// shard manages the unlabeled partition.
-func (s *Shard) Values() []string {
-	out := sets.List(s.values)
-	if s.unlabeled {
-		out = append(out, UnlabeledValue)
-	}
-	return out
-}
+// Values returns the managed values in canonical order.
+func (s *Shard) Values() []string { return sets.List(s.values) }
 
 // String renders the managed values as the operator would write them.
 func (s *Shard) String() string { return strings.Join(s.Values(), ",") }
@@ -98,46 +77,19 @@ func (s *Shard) String() string { return strings.Join(s.Values(), ",") }
 // Owns reports whether the shard manages a concrete value of the shard label.
 func (s *Shard) Owns(value string) bool { return s.values.Has(value) }
 
-// OwnsUnlabeled reports whether the shard manages the objects carrying no shard label.
-func (s *Shard) OwnsUnlabeled() bool { return s.unlabeled }
-
 // ID is a stable, DNS-1123-safe identifier for the shard, used to label the Leases that record
 // which shard holds what.
 //
 // The ID spells the values out when they have a short DNS-safe rendering and falls back to a hash
 // only when they do not, since these names are what an operator sees when debugging.
 func (s *Shard) ID() string {
-	if readable, ok := s.readableID(); ok {
-		return readable
+	candidate := strings.Join(s.Values(), "-")
+	if candidate != "" && len(candidate) <= maxReadableIDLength && len(validation.IsDNS1123Label(candidate)) == 0 {
+		return candidate
 	}
 
-	sum := sha256.Sum256([]byte(s.canonical()))
+	sum := sha256.Sum256([]byte(s.String()))
 	return "h" + hex.EncodeToString(sum[:])[:10]
-}
-
-func (s *Shard) readableID() (string, bool) {
-	// A literal value spelled like the sentinel's rendering would make the ID ambiguous, whether
-	// or not this shard also manages the unlabeled partition.
-	if s.values.Has(catchAllID) {
-		return "", false
-	}
-
-	parts := sets.List(s.values)
-	if s.unlabeled {
-		parts = append(parts, catchAllID)
-	}
-
-	candidate := strings.Join(parts, "-")
-	if candidate == "" || len(candidate) > maxReadableIDLength || len(validation.IsDNS1123Label(candidate)) > 0 {
-		return "", false
-	}
-	return candidate, true
-}
-
-// canonical renders the shard so that equivalent configurations hash identically regardless of the
-// order the values were given in.
-func (s *Shard) canonical() string {
-	return fmt.Sprintf("unlabeled=%t;values=%s", s.unlabeled, strings.Join(sets.List(s.values), ","))
 }
 
 // Equal reports whether both shards manage exactly the same values. Used to detect two instances
@@ -146,7 +98,7 @@ func (s *Shard) Equal(other *Shard) bool {
 	if s == nil || other == nil {
 		return s == other
 	}
-	return s.unlabeled == other.unlabeled && s.values.Equal(other.values)
+	return s.values.Equal(other.values)
 }
 
 // Conflict describes what both shards manage, or "" when they are disjoint.
@@ -158,16 +110,14 @@ func (s *Shard) Conflict(other *Shard) string {
 		return ""
 	}
 
-	var parts []string
-	if s.unlabeled && other.unlabeled {
-		parts = append(parts, "objects carrying no shard label")
+	shared := s.values.Intersection(other.values)
+	if shared.Len() == 0 {
+		return ""
 	}
-	if shared := s.values.Intersection(other.values); shared.Len() > 0 {
-		values := sets.List(shared)
-		sort.Strings(values)
-		parts = append(parts, "the shard value(s) "+strings.Join(values, ", "))
-	}
-	return strings.Join(parts, " and ")
+
+	values := sets.List(shared)
+	sort.Strings(values)
+	return "the shard value(s) " + strings.Join(values, ", ")
 }
 
 // Overlaps reports whether both shards manage the same object.

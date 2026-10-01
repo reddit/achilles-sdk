@@ -66,7 +66,7 @@ func valueLease(value, instance, identity string, renewedAgo time.Duration) *coo
 
 	return &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      valueLeaseName(testGroup, value, false),
+			Name:      valueLeaseName(testGroup, value),
 			Namespace: "ns",
 			Labels: map[string]string{
 				GroupLabelKey:    testGroup,
@@ -156,15 +156,17 @@ func TestSyncHoldsAConfiguredValueNoObjectCarriesYet(t *testing.T) {
 	assert.Equal(t, Owned, o.Ownership(obj("9", true)))
 }
 
-func TestSyncClaimsTheUnlabeledSentinel(t *testing.T) {
+// An object carrying no shard value cannot be declared on any instance, so it is reconcilable by
+// nobody and must be reported rather than silently dropped.
+func TestObjectsWithNoShardValueAreNeverOwnedAndAlwaysReported(t *testing.T) {
 	c := testClient()
-	catchAll := mustOwner(t, c, "inst-catchall", "pod-catchall", []string{UnlabeledValue}, inventory(true, "0"))
-	require.NoError(t, catchAll.Sync(context.Background()))
+	o := mustOwner(t, c, "inst-a", "pod-a", []string{"0"}, inventory(true, "0"))
+	require.NoError(t, o.Sync(context.Background()))
 
-	assert.Equal(t, Owned, catchAll.Ownership(obj("", false)))
-	assert.Equal(t, NotManaged, catchAll.Ownership(obj("0", true)))
-	assert.Equal(t, 1.0, ignoredMetric(t, catchAll, "0"))
-	assert.Equal(t, 0.0, ignoredMetric(t, catchAll, UnlabeledValue))
+	assert.Equal(t, NotManaged, o.Ownership(obj("", false)), "no label")
+	assert.Equal(t, NotManaged, o.Ownership(obj("", true)), "an empty label value is the same case")
+	assert.Equal(t, 1.0, ignoredMetric(t, o, MissingValue))
+	assert.NotContains(t, holders(t, c), MissingValue, "and gets no lease")
 }
 
 // Two Deployments misconfigured with one value is the case the lease exists for: both manage it, so
@@ -267,7 +269,7 @@ func TestOwnershipBeforeFirstSyncIsPendingNotOwned(t *testing.T) {
 func TestSyncIgnoresOtherGroupsLeases(t *testing.T) {
 	c := testClient()
 	foreign := valueLease("0", "inst-other", "other-controller-pod", time.Second)
-	foreign.Name = valueLeaseName("othertype", "0", false)
+	foreign.Name = valueLeaseName("othertype", "0")
 	foreign.Labels[GroupLabelKey] = "othertype"
 	require.NoError(t, c.Create(context.Background(), foreign))
 
@@ -290,19 +292,14 @@ func TestOwnerIsLeaderGated(t *testing.T) {
 }
 
 func TestValueLeaseNamesAreReadableWhenTheyCanBe(t *testing.T) {
-	assert.Equal(t, testGroup+"-value-0", valueLeaseName(testGroup, "0", false))
-	assert.Equal(t, testGroup+"-value-tier-one", valueLeaseName(testGroup, "tier-one", false))
-	assert.Equal(t, testGroup+"-unlabeled", valueLeaseName(testGroup, "", true))
+	assert.Equal(t, testGroup+"-value-0", valueLeaseName(testGroup, "0"))
+	assert.Equal(t, testGroup+"-value-tier-one", valueLeaseName(testGroup, "tier-one"))
 }
 
 // Label values admit characters object names do not, so anything unusable must still yield a name.
 func TestValueLeaseNamesAreAlwaysValidObjectNames(t *testing.T) {
 	for _, value := range []string{"0", "tier-one", "Tier_One", "", "a.b.c", strings.Repeat("x", 63)} {
-		got := valueLeaseName(testGroup, value, false)
+		got := valueLeaseName(testGroup, value)
 		assert.True(t, isDNSSubdomain(got), "value %q yielded invalid name %q", value, got)
 	}
-}
-
-func TestSentinelCannotCollideWithALiteralValue(t *testing.T) {
-	assert.NotEqual(t, valueLeaseName(testGroup, "unlabeled", false), valueLeaseName(testGroup, "", true))
 }

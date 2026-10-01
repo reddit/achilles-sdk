@@ -110,17 +110,17 @@ type Options struct {
 // ShardOptions configures sharding for one controller instance. An empty Values disables it.
 type ShardOptions struct {
 	// Values are the concrete shard values this instance manages, read from the shard.DefaultKey
-	// label, e.g. {"0", "1"}. Use shard.UnlabeledValue for the instance that manages objects
-	// carrying no shard label.
+	// label, e.g. {"0", "1"}.
 	//
 	// Nothing is filtered: the values state what this instance reconciles, and exclusivity is
 	// settled at run time by holding a Lease per value, so two instances configured with the same
 	// value still divide the objects between them rather than duplicating work.
 	//
-	// A value no instance is configured with is reconciled by nobody, deliberately — see
-	// achilles_shard_values_ignored. Assigning the label to objects is the platform's
-	// responsibility; the SDK only reads it, and propagates it from a root object onto the
-	// children that object manages.
+	// Every shard value must be declared on some instance. A value no instance declares —
+	// including the absent value, i.e. an object carrying no shard label — is reconciled by
+	// nobody, deliberately; see achilles_shard_values_ignored. Assigning the label to objects is
+	// the platform's responsibility; the SDK only reads it, and propagates it from a root object
+	// onto the children that object manages.
 	Values []string
 
 	// Types are the GVKs being partitioned: the types whose shard labels are read to decide
@@ -161,7 +161,7 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 
 	flags.DurationVar(&o.SyncPeriod, "sync-period", 10*time.Hour, "Minimum frequency at which all controllers will perform a reconciliation.")
 
-	flags.StringSliceVar(&o.Shard.Values, "shard-values", nil, fmt.Sprintf("Concrete values of the %q label whose objects this instance reconciles, e.g. \"0,1\". Pass %q for the instance managing objects carrying no shard label. Values no instance is given are reconciled by nobody. Empty disables sharding", shard.DefaultKey, shard.UnlabeledValue))
+	flags.StringSliceVar(&o.Shard.Values, "shard-values", nil, fmt.Sprintf("Concrete values of the %q label whose objects this instance reconciles, e.g. \"0,1\". Every value must be declared on some instance: a value no instance is given, including the absent value, is reconciled by nobody. Empty disables sharding", shard.DefaultKey))
 	flags.StringVar(&o.Shard.InstanceName, "instance-name", os.Getenv("INSTANCE_NAME"), "Name of this controller instance, which must be the name of its own Deployment. Names the leader election lock. Required when shard-values is set")
 
 	flags.BoolVar(&o.LeaderElection, "leader-election", false, "Enables leader election for the controller (a form of active-passive HA)")

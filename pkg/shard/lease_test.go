@@ -200,7 +200,7 @@ func TestLeaseNameIsScopedToGroupAndInstance(t *testing.T) {
 	a := mustAdvertiser(t, testClient(), "app-controller-critical", []string{"0", "1"})
 	assert.Equal(t, testGroup+"-instance-app-controller-critical", a.LeaseName())
 
-	b := mustAdvertiser(t, testClient(), "app-controller-standard", []string{UnlabeledValue})
+	b := mustAdvertiser(t, testClient(), "app-controller-standard", []string{"2", "3"})
 	assert.Equal(t, testGroup+"-instance-app-controller-standard", b.LeaseName())
 }
 

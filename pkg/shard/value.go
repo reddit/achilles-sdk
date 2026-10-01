@@ -36,92 +36,53 @@ const (
 	TypesAnnotationKey = "shard.infrared.reddit.com/types"
 )
 
-// valueRef identifies one partition of the objects: either a concrete value of the shard label, or
-// the objects carrying no shard label at all.
+// MissingValue is the value reported for objects that carry no usable shard value, i.e. no shard
+// label or an empty one.
 //
-// The sentinel cannot be folded into value as the empty string, because "" is itself a legal label
-// value and would then share a partition with unlabelled objects.
-type valueRef struct {
-	value     string
-	unlabeled bool
-}
+// Such an object can never be reconciled, since only a concrete value can be declared on an
+// instance, so it is always reported as ignored. Spelled with angle brackets so it cannot be
+// confused with a real value, which is alphanumeric with dashes, dots, and underscores.
+const MissingValue = "<none>"
 
-// managedBy reports whether a shard manages this partition.
-func (r valueRef) managedBy(s *Shard) bool {
-	if r.unlabeled {
-		return s.OwnsUnlabeled()
-	}
-	return s.Owns(r.value)
-}
-
-// String renders the partition the way an operator configures it, so that a reported value can be
-// pasted straight into --shard-values.
-func (r valueRef) String() string {
-	if r.unlabeled {
-		return UnlabeledValue
-	}
-	return r.value
-}
-
-// Inventory is the set of shard partitions objects actually occupy. Ownership is configured rather
-// than discovered, so this is used to report the partitions no instance manages, not to decide
-// what to claim.
+// Inventory is the set of shard values objects actually carry. Ownership is configured rather than
+// discovered, so this is used to report the values no instance manages, not to decide what to
+// claim.
 type Inventory struct {
-	// Values are the distinct shard label values in use.
+	// Values are the distinct non-empty shard label values in use.
 	Values sets.Set[string]
 
-	// Unlabeled reports whether any object carries no shard label.
+	// Unlabeled reports whether any object carries no usable shard value.
 	Unlabeled bool
 }
 
-// refs returns the partitions in a deterministic order, so that reported values are stable between
-// syncs.
-func (i Inventory) refs() []valueRef {
+// reported returns every value in use for metric purposes, in a deterministic order, with
+// MissingValue standing in for the objects that carry none.
+func (i Inventory) reported() []string {
 	values := i.Values.UnsortedList()
 	sort.Strings(values)
 
-	refs := make([]valueRef, 0, len(values)+1)
-	for _, v := range values {
-		refs = append(refs, valueRef{value: v})
-	}
 	if i.Unlabeled {
-		refs = append(refs, valueRef{unlabeled: true})
+		values = append(values, MissingValue)
 	}
-	return refs
+	return values
 }
 
-// refs returns the partitions this shard manages, in a deterministic order so that concurrently
-// syncing owners contend for leases in the same sequence.
-func (s *Shard) refs() []valueRef {
-	refs := make([]valueRef, 0, s.values.Len()+1)
-	for _, v := range sets.List(s.values) {
-		refs = append(refs, valueRef{value: v})
-	}
-	if s.unlabeled {
-		refs = append(refs, valueRef{unlabeled: true})
-	}
-	return refs
+// valueOf reports an object's shard value, and whether it has a usable one at all.
+//
+// An empty label value is treated the same as an absent one: neither can be declared on an
+// instance, so neither is reconcilable, and distinguishing them would only add an unclaimable
+// partition.
+func valueOf(obj client.Object, key string) (string, bool) {
+	value := obj.GetLabels()[key]
+	return value, value != ""
 }
 
-// ValueOf reports which partition an object belongs to.
-func valueOf(obj client.Object, key string) valueRef {
-	value, ok := obj.GetLabels()[key]
-	if !ok {
-		return valueRef{unlabeled: true}
-	}
-	return valueRef{value: value}
-}
-
-// valueLeaseName names the Lease conferring ownership of one partition.
+// valueLeaseName names the Lease conferring ownership of one shard value.
 //
 // Label values admit characters object names do not (uppercase, underscores), so a value that will
 // not survive as a name is hashed. The readable form is preferred because these names are what an
 // operator reads out of `kubectl get leases` when working out who owns what.
-func valueLeaseName(group, value string, unlabeled bool) string {
-	if unlabeled {
-		return group + "-unlabeled"
-	}
-
+func valueLeaseName(group, value string) string {
 	id := value
 	if id == "" || len(id) > maxReadableIDLength || len(validation.IsDNS1123Label(id)) > 0 {
 		sum := sha256.Sum256([]byte(value))
@@ -130,8 +91,8 @@ func valueLeaseName(group, value string, unlabeled bool) string {
 	return fmt.Sprintf("%s-value-%s", group, id)
 }
 
-// instanceLeaseName names the Lease advertising one controller instance's selector. Keyed on the
-// instance rather than the shard so that two Deployments sharing an instance name — which means
+// instanceLeaseName names the Lease advertising one controller instance's shard values. Keyed on
+// the instance rather than the shard so that two Deployments sharing an instance name — which means
 // sharing a leader election lock, and so one of them never running — is detectable.
 func instanceLeaseName(group, instance string) string {
 	name := fmt.Sprintf("%s-instance-%s", group, instance)

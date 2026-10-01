@@ -18,7 +18,7 @@ import (
 type Ownership int
 
 const (
-	// Owned means this instance holds the lease on the object's partition.
+	// Owned means this instance holds the lease on the object's shard value.
 	Owned Ownership = iota
 
 	// NotManaged means the object's shard value is not one this instance was configured with,
@@ -26,13 +26,13 @@ const (
 	// that without a configuration change, so there is nothing to wait for.
 	NotManaged
 
-	// Pending means this instance manages the object's partition but does not hold its lease,
+	// Pending means this instance manages the object's value but does not hold its lease,
 	// either because it has not synced yet or because another instance still holds it. Transient,
 	// so the object is worth revisiting.
 	Pending
 )
 
-// ListFunc reports the shard partitions objects currently occupy.
+// ListFunc reports the shard values objects currently carry.
 type ListFunc func(context.Context) (Inventory, error)
 
 // OwnerConfig configures an Owner.
@@ -58,18 +58,11 @@ type OwnerConfig struct {
 	// DefaultLeaseDuration.
 	LeaseDuration time.Duration
 
-	// List enumerates the partitions in use, used to report the ones no instance manages.
+	// List enumerates the values in use, used to report the ones no instance manages.
 	List ListFunc
 
 	// Log is optional.
 	Log *zap.SugaredLogger
-}
-
-// heldSet is the set of partitions this instance currently holds, replaced wholesale on each sync
-// so that readers never observe a partially updated view.
-type heldSet struct {
-	values    sets.Set[string]
-	unlabeled bool
 }
 
 // Owner arbitrates which instance of a controller reconciles which objects, by holding a Lease per
@@ -86,7 +79,9 @@ type heldSet struct {
 type Owner struct {
 	client client.Client
 	cfg    OwnerConfig
-	held   atomic.Pointer[heldSet]
+
+	// held is replaced wholesale on each sync, so readers never observe a partially updated view.
+	held atomic.Pointer[sets.Set[string]]
 }
 
 // NewOwner returns an Owner for the given configuration.
@@ -102,11 +97,11 @@ func (o *Owner) Shard() *Shard { return o.cfg.Shard }
 
 // Ownership reports whether this instance may reconcile the given object.
 //
-// Before the first sync every managed partition is Pending rather than Owned, since reconciling an
+// Before the first sync every managed value is Pending rather than Owned, since reconciling an
 // object whose lease is unheld is exactly what the lease exists to prevent.
 func (o *Owner) Ownership(obj client.Object) Ownership {
-	ref := valueOf(obj, o.cfg.Shard.Key())
-	if !ref.managedBy(o.cfg.Shard) {
+	value, ok := valueOf(obj, o.cfg.Shard.Key())
+	if !ok || !o.cfg.Shard.Owns(value) {
 		return NotManaged
 	}
 
@@ -114,13 +109,7 @@ func (o *Owner) Ownership(obj client.Object) Ownership {
 	if held == nil {
 		return Pending
 	}
-	if ref.unlabeled {
-		if held.unlabeled {
-			return Owned
-		}
-		return Pending
-	}
-	if held.values.Has(ref.value) {
+	if held.Has(value) {
 		return Owned
 	}
 	return Pending
@@ -155,40 +144,36 @@ func (o *Owner) Start(ctx context.Context) error {
 func (o *Owner) NeedLeaderElection() bool { return true }
 
 // Sync acquires or renews a Lease for every value this instance is configured with, releases the
-// ones it no longer is, and reports which partitions in use no instance manages.
+// ones it no longer is, and reports which values in use no instance manages.
 func (o *Owner) Sync(ctx context.Context) error {
-	held := &heldSet{values: sets.New[string]()}
+	held := sets.New[string]()
 	managed := sets.New[string]()
 	var contested int
 
-	for _, ref := range o.cfg.Shard.refs() {
-		name := valueLeaseName(o.cfg.Group.Name, ref.value, ref.unlabeled)
+	for _, value := range o.cfg.Shard.Values() {
+		name := valueLeaseName(o.cfg.Group.Name, value)
 		managed.Insert(name)
 
-		state, err := o.reconcileLease(ctx, name, ref)
+		state, err := o.reconcileLease(ctx, name, value)
 		if err != nil {
 			return err
 		}
 
 		switch state {
 		case leaseHeld:
-			if ref.unlabeled {
-				held.unlabeled = true
-			} else {
-				held.values.Insert(ref.value)
-			}
+			held.Insert(value)
 		case leaseContested:
 			contested++
 			if o.cfg.Log != nil {
 				o.cfg.Log.Warnw("shard value is managed by this instance but held by another",
-					"value", ref.String(), "shard", o.cfg.Shard.ID())
+					"value", value, "shard", o.cfg.Shard.ID())
 			}
 		}
 	}
 
-	o.held.Store(held)
+	o.held.Store(&held)
 
-	inUse, err := o.reportPartitionsInUse(ctx)
+	inUse, err := o.reportValuesInUse(ctx)
 	if err != nil {
 		return err
 	}
@@ -196,25 +181,18 @@ func (o *Owner) Sync(ctx context.Context) error {
 		return err
 	}
 
-	recordOwnership(o.cfg.Group.Name, o.cfg.Shard.ID(), held.count(), contested)
+	recordOwnership(o.cfg.Group.Name, o.cfg.Shard.ID(), held.Len(), contested)
 	return nil
 }
 
-func (h *heldSet) count() int {
-	n := h.values.Len()
-	if h.unlabeled {
-		n++
-	}
-	return n
-}
-
-// reportPartitionsInUse records, for every partition objects actually occupy, whether this instance
-// ignores it. Returns the lease names of those partitions.
+// reportValuesInUse records, for every value objects actually carry, whether this instance ignores
+// it. Returns the lease names of those values, which is what keeps a lease for a value that still
+// has objects from being deleted as stale.
 //
-// Both outcomes are recorded, not just the ignored ones, so that a partition ignored by *every*
+// Both outcomes are recorded, not just the ignored ones, so that a value ignored by *every*
 // instance is identifiable as one whose series are all 1. Reporting only the ignored ones would
 // instead require knowing how many instances are running.
-func (o *Owner) reportPartitionsInUse(ctx context.Context) (sets.Set[string], error) {
+func (o *Owner) reportValuesInUse(ctx context.Context) (sets.Set[string], error) {
 	inventory, err := o.cfg.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing shard values in use: %w", err)
@@ -222,15 +200,18 @@ func (o *Owner) reportPartitionsInUse(ctx context.Context) (sets.Set[string], er
 
 	names := sets.New[string]()
 	ignored := map[string]bool{}
-	for _, ref := range inventory.refs() {
-		names.Insert(valueLeaseName(o.cfg.Group.Name, ref.value, ref.unlabeled))
-
-		managed := ref.managedBy(o.cfg.Shard)
-		ignored[ref.String()] = !managed
-		if !managed && o.cfg.Log != nil {
-			o.cfg.Log.Debugw("ignoring shard value, this instance does not manage it",
-				"value", ref.String(), "shard", o.cfg.Shard.ID())
+	for _, value := range inventory.reported() {
+		ignored[value] = !o.cfg.Shard.Owns(value)
+		if value != MissingValue {
+			names.Insert(valueLeaseName(o.cfg.Group.Name, value))
 		}
+	}
+
+	// No instance can declare the absent value, so these objects are unreconcilable by anyone
+	// rather than merely someone else's work.
+	if inventory.Unlabeled && o.cfg.Log != nil {
+		o.cfg.Log.Warnw("objects carry no shard label, so no instance can reconcile them",
+			"key", o.cfg.Shard.Key())
 	}
 
 	recordIgnored(o.cfg.Group.Name, o.cfg.Shard.ID(), ignored)
@@ -251,31 +232,31 @@ const (
 //
 // Acquisition is a conflict-checked write against the resource version just read, so two instances
 // misconfigured with the same value cannot both succeed.
-func (o *Owner) reconcileLease(ctx context.Context, name string, ref valueRef) (leaseState, error) {
+func (o *Owner) reconcileLease(ctx context.Context, name, value string) (leaseState, error) {
 	var lease coordinationv1.Lease
 	err := o.client.Get(ctx, client.ObjectKey{Namespace: o.cfg.Namespace, Name: name}, &lease)
 
 	if apierrors.IsNotFound(err) {
-		created, err := o.create(ctx, name, ref)
+		created, err := o.create(ctx, name, value)
 		if err == nil {
 			return created, nil
 		}
 		if !apierrors.IsAlreadyExists(err) {
-			return leaseUnowned, fmt.Errorf("creating ownership lease for value %s: %w", ref, err)
+			return leaseUnowned, fmt.Errorf("creating ownership lease for value %s: %w", value, err)
 		}
 		// Another instance created it first. Re-read rather than assume, so that losing the race
 		// is not reported as the value being unowned.
 		if err := o.client.Get(ctx, client.ObjectKey{Namespace: o.cfg.Namespace, Name: name}, &lease); err != nil {
-			return leaseUnowned, fmt.Errorf("getting ownership lease for value %s: %w", ref, err)
+			return leaseUnowned, fmt.Errorf("getting ownership lease for value %s: %w", value, err)
 		}
 		return o.stateOf(&lease), nil
 	}
 	if err != nil {
-		return leaseUnowned, fmt.Errorf("getting ownership lease for value %s: %w", ref, err)
+		return leaseUnowned, fmt.Errorf("getting ownership lease for value %s: %w", value, err)
 	}
 
 	if heldBy(&lease) == o.cfg.Identity || o.mayTakeOver(&lease) {
-		return o.write(ctx, &lease, ref, o.cfg.Identity, leaseHeld)
+		return o.write(ctx, &lease, value, o.cfg.Identity, leaseHeld)
 	}
 	return o.stateOf(&lease), nil
 }
@@ -300,12 +281,12 @@ func (o *Owner) stateOf(lease *coordinationv1.Lease) leaseState {
 	return leaseContested
 }
 
-func (o *Owner) create(ctx context.Context, name string, ref valueRef) (leaseState, error) {
+func (o *Owner) create(ctx context.Context, name, value string) (leaseState, error) {
 	lease := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: o.cfg.Namespace},
 	}
 
-	o.stampValue(lease, ref, o.cfg.Identity)
+	o.stampValue(lease, value, o.cfg.Identity)
 	if err := o.client.Create(ctx, lease); err != nil {
 		return leaseUnowned, err
 	}
@@ -317,22 +298,22 @@ func (o *Owner) create(ctx context.Context, name string, ref valueRef) (leaseSta
 func (o *Owner) write(
 	ctx context.Context,
 	lease *coordinationv1.Lease,
-	ref valueRef,
+	value string,
 	identity string,
 	onSuccess leaseState,
 ) (leaseState, error) {
-	o.stampValue(lease, ref, identity)
+	o.stampValue(lease, value, identity)
 
 	if err := o.client.Update(ctx, lease); err != nil {
 		if apierrors.IsConflict(err) {
 			return leaseContested, nil
 		}
-		return leaseUnowned, fmt.Errorf("writing ownership lease for value %s: %w", ref, err)
+		return leaseUnowned, fmt.Errorf("writing ownership lease for value %s: %w", value, err)
 	}
 	return onSuccess, nil
 }
 
-func (o *Owner) stampValue(lease *coordinationv1.Lease, ref valueRef, identity string) {
+func (o *Owner) stampValue(lease *coordinationv1.Lease, value, identity string) {
 	if lease.Labels == nil {
 		lease.Labels = map[string]string{}
 	}
@@ -344,7 +325,7 @@ func (o *Owner) stampValue(lease *coordinationv1.Lease, ref valueRef, identity s
 	}
 	// The resolved value, spelled as --shard-values takes it, since the Lease name only
 	// approximates it once a value is long enough or odd enough to need hashing.
-	lease.Annotations[ValueAnnotationKey] = ref.String()
+	lease.Annotations[ValueAnnotationKey] = value
 	lease.Annotations[TypesAnnotationKey] = o.cfg.Group.Types
 
 	now := metav1.NewMicroTime(time.Now())
@@ -370,7 +351,7 @@ func (o *Owner) stampValue(lease *coordinationv1.Lease, ref valueRef, identity s
 }
 
 // releaseStale gives up the leases this instance holds for values it is no longer configured with,
-// and deletes the leases of partitions that neither any object occupies nor this instance manages.
+// and deletes the leases of values that neither any object carries nor this instance manages.
 //
 // Releasing rather than waiting for expiry lets the instance now configured with the value pick it
 // up at once, which is what makes a change to --shard-values a clean rolling update.
@@ -387,14 +368,13 @@ func (o *Owner) releaseStale(ctx context.Context, managed, inUse sets.Set[string
 		}
 
 		if heldBy(lease) == o.cfg.Identity {
-			ref := refFromLease(lease)
-			if _, err := o.write(ctx, lease, ref, "", leaseUnowned); err != nil {
+			if _, err := o.write(ctx, lease, lease.Annotations[ValueAnnotationKey], "", leaseUnowned); err != nil {
 				return err
 			}
 			continue
 		}
 
-		// Unheld and occupied by nothing: no instance can want it, and whichever instance is
+		// Unheld and carried by nothing: no instance can want it, and whichever instance is
 		// configured with it recreates it on its next sync.
 		if heldBy(lease) == "" && !inUse.Has(lease.Name) {
 			if err := o.client.Delete(ctx, lease); err != nil && !apierrors.IsNotFound(err) {
@@ -414,16 +394,6 @@ func (o *Owner) listValueLeases(ctx context.Context) ([]coordinationv1.Lease, er
 		return nil, fmt.Errorf("listing ownership leases: %w", err)
 	}
 	return leases.Items, nil
-}
-
-// refFromLease recovers the partition a Lease confers from its annotation, which holds the value
-// verbatim even when the name had to be hashed.
-func refFromLease(lease *coordinationv1.Lease) valueRef {
-	value := lease.Annotations[ValueAnnotationKey]
-	if value == UnlabeledValue {
-		return valueRef{unlabeled: true}
-	}
-	return valueRef{value: value}
 }
 
 func heldBy(lease *coordinationv1.Lease) string {

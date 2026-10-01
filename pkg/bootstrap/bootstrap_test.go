@@ -191,7 +191,7 @@ var _ = Describe("buildManager", func() {
 		}
 
 		// Value "c" is in use but assigned to neither instance, and "a" is assigned to both.
-		instA := newOwner("ctl-a", "pod-1", "a", shard.UnlabeledValue)
+		instA := newOwner("ctl-a", "pod-1", "a")
 		instB := newOwner("ctl-b", "pod-2", "a", "b")
 
 		Expect(instA.Sync(mgrCtx)).To(Succeed())
@@ -204,8 +204,12 @@ var _ = Describe("buildManager", func() {
 		inB := claim(map[string]string{shard.DefaultKey: "b"})
 		inC := claim(map[string]string{shard.DefaultKey: "c"})
 
-		Expect(instA.Ownership(claim(nil))).To(Equal(shard.Owned), "the unlabeled partition is claimed explicitly")
 		Expect(instB.Ownership(inB)).To(Equal(shard.Owned))
+
+		// Every value must be declared, and the absent value cannot be, so an unlabeled object is
+		// reconcilable by nobody.
+		Expect(instA.Ownership(claim(nil))).To(Equal(shard.NotManaged))
+		Expect(instB.Ownership(claim(nil))).To(Equal(shard.NotManaged))
 
 		// Configured with the same value, so exactly one holds it and the other defers rather than
 		// duplicating the work.

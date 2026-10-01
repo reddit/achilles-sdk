@@ -47,20 +47,12 @@ func TestParseNormalizesValues(t *testing.T) {
 	assert.Equal(t, "0,1", s.String())
 }
 
-func TestParseAcceptsTheUnlabeledSentinel(t *testing.T) {
-	s := mustParse(t, "0", UnlabeledValue)
-
-	assert.True(t, s.OwnsUnlabeled())
-	assert.True(t, s.Owns("0"))
-	assert.Equal(t, []string{"0", UnlabeledValue}, s.Values())
-}
-
 func TestOwns(t *testing.T) {
 	s := mustParse(t, "0", "1")
 
 	assert.True(t, s.Owns("0"))
 	assert.False(t, s.Owns("2"), "a value this instance was not given is not its work")
-	assert.False(t, s.OwnsUnlabeled(), "the unlabeled partition must be claimed explicitly")
+	assert.False(t, s.Owns(""), "the absent value cannot be declared, so it is never owned")
 }
 
 func TestID(t *testing.T) {
@@ -71,14 +63,10 @@ func TestID(t *testing.T) {
 		"single value is used verbatim": {[]string{"shard1"}, "shard1"},
 		"value set is spelled out":      {[]string{"a", "b"}, "a-b"},
 		"tier split":                    {[]string{"0", "1"}, "0-1"},
-		"catch-all":                     {[]string{UnlabeledValue}, "catchall"},
-		"catch-all alongside values":    {[]string{"0", UnlabeledValue}, "0-catchall"},
 		"non-dns-safe value is hashed":  {[]string{"Shard_1"}, "h"},
 		"long value set is hashed": {
 			[]string{"aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd", "eeeeeeeeee"}, "h",
 		},
-		// Rendering the sentinel as "catchall" would otherwise make these two shards share an ID.
-		"literal catchall beside the sentinel is hashed": {[]string{"catchall", UnlabeledValue}, "h"},
 	}
 
 	for name, tc := range tests {
@@ -99,17 +87,11 @@ func TestIDIsOrderIndependent(t *testing.T) {
 		"the same values in a different order are the same shard")
 }
 
-func TestIDDistinguishesTheSentinelFromALiteralValue(t *testing.T) {
-	assert.NotEqual(t, mustParse(t, "catchall").ID(), mustParse(t, UnlabeledValue).ID())
-}
-
 func TestIDIsDNSSafe(t *testing.T) {
 	for _, values := range [][]string{
 		{"shard1"},
-		{UnlabeledValue},
 		{"a", "b"},
 		{"Shard_1"},
-		{"catchall", UnlabeledValue},
 		{strings.Repeat("x", 63)},
 	} {
 		assert.Regexp(t, `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, mustParse(t, values...).ID(),
@@ -120,8 +102,6 @@ func TestIDIsDNSSafe(t *testing.T) {
 func TestEqual(t *testing.T) {
 	assert.True(t, mustParse(t, "0", "1").Equal(mustParse(t, "1", "0")))
 	assert.False(t, mustParse(t, "0", "1").Equal(mustParse(t, "0")))
-	assert.False(t, mustParse(t, "0").Equal(mustParse(t, "0", UnlabeledValue)),
-		"the unlabeled partition is work like any other")
 	assert.False(t, mustParse(t, "0").Equal(nil))
 }
 
@@ -134,9 +114,6 @@ func TestOverlaps(t *testing.T) {
 		"disjoint":                {[]string{"a"}, []string{"b"}, false},
 		"partial":                 {[]string{"a", "b"}, []string{"b", "c"}, true},
 		"disjoint sets":           {[]string{"a", "b"}, []string{"c", "d"}, false},
-		"catch-all vs value":      {[]string{UnlabeledValue}, []string{"a"}, false},
-		"catch-all vs catch-all":  {[]string{UnlabeledValue}, []string{UnlabeledValue}, true},
-		"catch-all vs mixed":      {[]string{UnlabeledValue}, []string{"a", UnlabeledValue}, true},
 		"the intended tier split": {[]string{"0", "1"}, []string{"2", "3"}, false},
 	}
 
@@ -160,13 +137,6 @@ func TestConflict(t *testing.T) {
 		},
 		"several shared values": {
 			[]string{"0", "1", "2"}, []string{"1", "2", "3"}, "the shard value(s) 1, 2",
-		},
-		"shared catch-all": {
-			[]string{UnlabeledValue}, []string{UnlabeledValue}, "objects carrying no shard label",
-		},
-		"shared catch-all and value": {
-			[]string{"0", UnlabeledValue}, []string{"0", UnlabeledValue},
-			"objects carrying no shard label and the shard value(s) 0",
 		},
 		"disjoint": {
 			[]string{"0", "1"}, []string{"2", "3"}, "",

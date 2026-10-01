@@ -11,6 +11,9 @@ is told which concrete values it manages:
 --shard-values=0,1
 ```
 
+Every shard value must be declared on some instance. There is no catch-all: a value no instance
+declares is reconciled by nobody, and that is the intended behaviour, not a gap.
+
 The values **claim** objects; they do not filter anything. Every instance still watches and caches
 every object, and exclusivity is settled at run time: the SDK holds a Lease per managed shard value
 and an instance reconciles an object only while it holds the Lease on that object's value.
@@ -65,18 +68,22 @@ The SDK does propagate the label from a root object onto the children that root 
 always agree with their owner's shard. The value comes from the root rather than from the instance's
 own configuration, which stays correct when an instance manages several values.
 
-## Always run a catch-all
+## Objects must carry a shard label
 
-Objects carrying no shard label form their own partition, with its own Lease. It is claimed
-explicitly, by the reserved value `@unlabeled`, so run exactly one instance with it:
+An object with no shard label — or an empty one, which is treated identically — has no value to
+declare, so **no instance can ever reconcile it**. There is deliberately no catch-all: every value
+is explicitly assigned, and "unlabeled" is not a value anyone can be assigned.
+
+This makes labelling a hard prerequisite rather than a nice-to-have. Before enabling sharding,
+ensure whatever creates these objects already stamps the label, or every object stops being
+reconciled the moment the flag is set.
+
+Unlabeled objects are not silent. They are reported as ignored under the value `<none>`, and each
+instance logs a warning while any exist:
 
 ```
---shard-values=@unlabeled
+objects carry no shard label, so no instance can reconcile them   key: shard.infrared.reddit.com/key
 ```
-
-Spelled with a leading `@` because Kubernetes label values are alphanumeric with dashes, dots, and
-underscores — so the sentinel cannot collide with a real value. An instance may mix it with
-ordinary values, e.g. `--shard-values=0,1,@unlabeled`.
 
 ## New shard values
 
@@ -147,13 +154,12 @@ must not, and "what is being partitioned" is exactly that scope. Nothing needs c
 | Lease | Purpose |
 | --- | --- |
 | `<group>-value-<value>` | Ownership of one concrete shard value |
-| `<group>-unlabeled` | Ownership of the objects carrying no shard label |
 | `<group>-instance-<instance>` | One instance's advertised shard values |
 | `<instance>` | Leader election, one per instance |
 
 Values that are not valid object names (uppercase, underscores, overly long) are hashed. Instances
-also carry a short readable shard ID derived from their values (`0-1`, `catchall`), which appears as
-a label and in logs but does not name anything that must be unique.
+also carry a short readable shard ID derived from their values (`0-1`), which appears as a label and
+in logs but does not name anything that must be unique.
 
 ## Adding, changing, or removing a shard
 
@@ -173,7 +179,7 @@ unreconciled. Reassign them to a remaining instance in the same change.
 
 | Metric | Meaning |
 | --- | --- |
-| `achilles_shard_values_ignored` | A value in use and whether this instance ignores it. `min by (group, value) (...) == 1` means no instance manages it, so its objects are reconciled by nobody. The one to page on. |
+| `achilles_shard_values_ignored` | A value in use and whether this instance ignores it. `min by (group, value) (...) == 1` means no instance manages it, so its objects are reconciled by nobody. The one to page on. Value `<none>` means objects carry no shard label at all. |
 | `achilles_shard_values_contested` | This instance manages a value another instance holds. Correct but unintended; two instances were configured with it. |
 | `achilles_shard_overlap` | Another instance manages one of this instance's values. |
 | `achilles_shard_values_held` | How many values this instance holds. Zero on a leader means ownership is not being acquired. |
