@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/reddit/achilles-sdk/pkg/logging"
+	"github.com/reddit/achilles-sdk/pkg/shard"
 )
 
 const (
@@ -96,6 +97,10 @@ type Options struct {
 	// The duration that non-leader candidates will  wait to force acquire leadership.
 	// This is measured against time of last observed ack. Default is 15 seconds.
 	LeaderElectionLeaseDuration time.Duration
+
+	// Shard divides this controller's objects between several instances of it. Its zero value
+	// disables sharding.
+	Shard ShardOptions
 }
 
 func (o *Options) AddToFlags(flags *pflag.FlagSet) {
@@ -122,6 +127,8 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 	flags.StringVar(&o.LeaderElectionNamespace, "leader-election-namespace", "", "Namespace in which the leader election resource will be created")
 	flags.DurationVar(&o.LeaderElectionRenewDeadline, "renew-deadline", 10*time.Second, "Renew deadline for leader election controller. Must be set to ensure the resource lock has an appropriate client timeout. If set too low, a single slow response from the API server can result in losing leadership. Defaults to 10s")
 	flags.DurationVar(&o.LeaderElectionLeaseDuration, "lease-duration", 15*time.Second, "Duration that non-leader candidates will wait to force acquire leadership. This is measured against time of last observed ack. Default is 15 seconds.")
+
+	flags.StringSliceVar(&o.Shard.Values, "shard-values", nil, fmt.Sprintf("Values of the %q label whose objects this instance reconciles, e.g. \"0,1\". Every value in use must be given to some instance: one no instance is given, including the absent value, is reconciled by nobody. Empty disables sharding", shard.DefaultKey))
 }
 
 // StartFunc is a function for starting a controller manager
@@ -145,9 +152,25 @@ func Start(
 		return fmt.Errorf("building k8s client config: %w", err)
 	}
 
+	// Resolved before the manager, which it names the leader election lock for.
+	sh, err := resolveSharding(ctx, cfg, opts)
+	if err != nil {
+		return fmt.Errorf("configuring sharding: %w", err)
+	}
+
 	mgr, err := buildManager(cfg, log, schemes, opts)
 	if err != nil {
 		return fmt.Errorf("building manager: %w", err)
+	}
+
+	startCtx := ctrl.SetupSignalHandler()
+	if sh != nil {
+		owner, err := sh.setup(mgr, opts, log)
+		if err != nil {
+			return fmt.Errorf("setting up sharding: %w", err)
+		}
+		// Reconcilers read ownership from the context the manager is started with.
+		startCtx = shard.NewContext(startCtx, owner)
 	}
 
 	if err := startFunc(ctx, mgr); err != nil {
@@ -155,7 +178,7 @@ func Start(
 	}
 
 	log.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(startCtx); err != nil {
 		return fmt.Errorf("starting manager: %w", err)
 	}
 
