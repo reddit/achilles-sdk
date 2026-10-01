@@ -206,6 +206,67 @@ func TestValuesNoLongerInUseStopBeingReported(t *testing.T) {
 	assert.Equal(t, 0.0, ignoredMetric(t, "report-c", "1"))
 }
 
+// Giving up a value on the way out lets an instance newly configured with it claim it at once,
+// rather than waiting out the lease.
+func TestReleaseGivesUpHeldValues(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0"}, nil)
+	require.NoError(t, o.Sync(context.Background()))
+
+	o.release()
+
+	lease := getLease(t, c, "0")
+	assert.Empty(t, heldBy(lease))
+	assert.NotContains(t, lease.Labels, InstanceLabelKey)
+	assert.Equal(t, Pending, o.Ownership(labeled("0")))
+}
+
+// Clearing the holder of a value another process has since taken would take it from them rather
+// than give it up.
+func TestReleaseLeavesAnotherProcessesValueAlone(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0"}, nil)
+	require.NoError(t, o.Sync(context.Background()))
+
+	taken := getLease(t, c, "0")
+	identity := "pod-b"
+	taken.Spec.HolderIdentity = &identity
+	taken.Labels[InstanceLabelKey] = "inst-b"
+	require.NoError(t, c.Update(context.Background(), taken))
+
+	o.release()
+
+	lease := getLease(t, c, "0")
+	assert.Equal(t, "pod-b", heldBy(lease))
+	assert.Equal(t, "inst-b", lease.Labels[InstanceLabelKey])
+}
+
+func TestReleaseWithNothingHeldIsHarmless(t *testing.T) {
+	o := testOwner(t, fake.NewClientBuilder().Build(), "inst-a", "pod-a", []string{"0"}, nil)
+
+	assert.NotPanics(t, o.release)
+}
+
+// The context Start was given is already cancelled by the time values are released, so the release
+// cannot depend on it.
+func TestStartReleasesOnShutdown(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0"}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- o.Start(ctx) }()
+
+	require.Eventually(t, func() bool {
+		return o.Ownership(labeled("0")) == Owned
+	}, time.Second, 10*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-stopped)
+
+	assert.Empty(t, heldBy(getLease(t, c, "0")))
+}
+
 // A standby replica must not hold values it will not act on.
 func TestOwnerIsLeaderGated(t *testing.T) {
 	o := testOwner(t, fake.NewClientBuilder().Build(), "inst-a", "pod-a", []string{"0"}, nil)
