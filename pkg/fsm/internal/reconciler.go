@@ -25,6 +25,7 @@ import (
 	"github.com/reddit/achilles-sdk/pkg/fsm/types"
 	"github.com/reddit/achilles-sdk/pkg/io"
 	"github.com/reddit/achilles-sdk/pkg/meta"
+	"github.com/reddit/achilles-sdk/pkg/shard"
 	"github.com/reddit/achilles-sdk/pkg/status"
 )
 
@@ -89,6 +90,21 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	log.Debug("entering reconcile")
 	startedAt := time.Now()
 	defer func() { log.Debugf("finished reconcile in %s", time.Since(startedAt)) }()
+
+	// Resolved before anything below records against the object. Every instance is notified of
+	// every object, so an instance that will not reconcile this one must leave no trace of it,
+	// or the fleet would report each object once per instance.
+	ownership, err := r.ownership(ctx, req)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	switch ownership {
+	case shard.NotManaged:
+		return ctrl.Result{}, nil
+	case shard.Pending:
+		log.Debug("deferring reconcile until this object's shard value is held")
+		return ctrl.Result{RequeueAfter: shard.PendingRequeueInterval}, nil
+	}
 
 	var persistedObj Obj
 	// record metrics
@@ -165,6 +181,25 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return result.Get(log)
+}
+
+// ownership reports whether this instance may reconcile the requested object, reading it only when
+// the controller is sharded.
+//
+// A deleted object is treated as owned: its shard value is gone, so no instance can claim it, and
+// what remains to do is each instance discarding its own record of the object.
+func (r *fsmReconciler[T, Obj]) ownership(ctx context.Context, req ctrl.Request) (shard.Ownership, error) {
+	if !shard.Enabled(ctx) {
+		return shard.Owned, nil
+	}
+
+	obj := Obj(new(T))
+	if err := r.client.Get(ctx, req.NamespacedName, obj); k8serrors.IsNotFound(err) {
+		return shard.Owned, nil
+	} else if err != nil {
+		return shard.Owned, fmt.Errorf("getting %T to resolve its shard: %w", obj, err)
+	}
+	return shard.Check(ctx, obj), nil
 }
 
 // reconcile the object through a sequence of FSM states
@@ -354,6 +389,7 @@ func (r *fsmReconciler[T, Obj]) applyOutputs(
 			log.DPanicf("unrecognized output resource type %s, must be added to managed types", gvk)
 		}
 		meta.SetRedditLabels(res, r.name)
+		shard.Propagate(obj, res)
 	}
 	return fsmio.ApplyOutputSet(ctx, r.log, r.client, r.scheme, obj, outputSet)
 }
