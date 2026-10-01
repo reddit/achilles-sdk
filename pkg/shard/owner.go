@@ -102,8 +102,8 @@ func (o *Owner) Ownership(obj client.Object) Ownership {
 // replica does not hold work it will not do.
 func (o *Owner) NeedLeaderElection() bool { return true }
 
-// Start keeps this instance's claims current until the context is cancelled, satisfying
-// manager.Runnable.
+// Start keeps this instance's claims current until the context is cancelled, then gives them up,
+// satisfying manager.Runnable.
 func (o *Owner) Start(ctx context.Context) error {
 	o.sync(ctx)
 
@@ -113,11 +113,66 @@ func (o *Owner) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			o.release()
 			return nil
 		case <-ticker.C:
 			o.sync(ctx)
 		}
 	}
+}
+
+// release gives up every value this instance holds, so that an instance newly configured with one
+// of them can claim it at once instead of waiting out the lease.
+//
+// Runs on its own context, because the one Start was given is cancelled by the time we get here.
+// Best effort: a process that is killed outright releases nothing, so lease expiry remains what
+// actually bounds how long a value stays claimed.
+func (o *Owner) release() {
+	empty := sets.New[string]()
+	held := o.held.Swap(&empty)
+	if held == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer cancel()
+
+	for _, value := range sets.List(*held) {
+		if err := o.releaseValue(ctx, value); err != nil && o.cfg.Log != nil {
+			o.cfg.Log.Warnw("releasing shard value", "value", value, "error", err)
+		}
+	}
+}
+
+// releaseValue clears this process's claim on one value.
+//
+// Identity-checked and conflict-checked, because clearing the holder of a value another process
+// has since taken would take it from them rather than give it up.
+func (o *Owner) releaseValue(ctx context.Context, value string) error {
+	key := client.ObjectKey{Namespace: o.cfg.Namespace, Name: leaseName(value)}
+
+	var lease coordinationv1.Lease
+	if err := o.client.Get(ctx, key, &lease); apierrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	if heldBy(&lease) != o.cfg.Identity {
+		return nil
+	}
+
+	delete(lease.Labels, InstanceLabelKey)
+	lease.Spec.HolderIdentity = nil
+	lease.Spec.AcquireTime = nil
+
+	if err := o.client.Update(ctx, &lease); apierrors.IsConflict(err) {
+		// Another process wrote first, so there is nothing left to give up.
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return nil
 }
 
 // sync logs a failure rather than returning it: letting a Lease lapse hands its value to another

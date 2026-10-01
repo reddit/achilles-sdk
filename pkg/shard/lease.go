@@ -19,6 +19,10 @@ const DefaultLeaseDuration = 30 * time.Second
 // namespace, and makes them identifiable in `kubectl get leases`.
 const leasePrefix = "achilles-shard"
 
+// releaseTimeout bounds giving up claimed values at shutdown, well inside the manager's default
+// 30-second grace period.
+const releaseTimeout = 5 * time.Second
+
 // leaseName names the Lease conferring one shard value.
 func leaseName(value string) string {
 	return fmt.Sprintf("%s-%s", leasePrefix, value)
