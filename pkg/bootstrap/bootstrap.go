@@ -78,39 +78,11 @@ type Options struct {
 	// Cache.SyncPeriod, when nil, is defaulted from the SyncPeriod flag.
 	Cache cache.Options
 
-	// ShardSelector restricts this instance to one shard of the objects it would otherwise
+	// Shard restricts this instance to a set of shards of the objects it would otherwise
 	// reconcile, letting several instances of the same controller run in a cluster over mutually
-	// exclusive slices. Empty disables sharding.
-	//
-	// Every requirement must reference shard.DefaultKey, e.g. "shard.infrared.reddit.com/key=a".
-	// Exactly one instance should run the negated form, "!shard.infrared.reddit.com/key", so that
-	// objects carrying no shard label are still reconciled by someone.
-	//
-	// The selector states which shard values this instance *claims*; it does not filter any watch.
-	// Ownership is settled at run time by holding a Lease per value, so two instances given
-	// overlapping selectors still divide the objects between them rather than duplicating work.
-	//
-	// Assigning the label to objects is the platform's responsibility. The SDK only reads it, and
-	// propagates it from a root object onto the children that object manages.
-	ShardSelector string
-
-	// ShardedTypes are the root types partitioned by ShardSelector: the types whose shard labels
-	// are enumerated to discover the values in use, and whose reconciliation is gated on owning
-	// the object's value. It has no corresponding CLI flag and must be set programmatically.
-	//
-	// A root type left out of this list is reconciled by every shard, so any controller in a
-	// sharded binary needs its root type listed here.
-	ShardedTypes []client.Object
-
-	// InstanceName names this controller instance, and must be the name of its own Deployment.
-	// Required when ShardSelector is set; defaults from the INSTANCE_NAME environment variable.
-	//
-	// It names the leader election lock, so two instances sharing it are treated by leader
-	// election as replicas of each other: one wins and the other stands by without ever starting a
-	// reconciler, leaving its shard's objects unreconciled. Taking the name from the Deployment
-	// makes that impossible by construction, since Kubernetes already guarantees Deployment names
-	// are unique in a namespace.
-	InstanceName string
+	// exclusive slices. Its zero value disables sharding (i.e. the controller reconciles all
+	// instances of the GVKs it manages).
+	Shard ShardOptions
 
 	// Determines whether the controller should use leader election (a form of active-passive HA).
 	LeaderElection bool
@@ -135,6 +107,41 @@ type Options struct {
 	LeaderElectionLeaseDuration time.Duration
 }
 
+// ShardOptions configures sharding for one controller instance. An empty Values disables it.
+type ShardOptions struct {
+	// Values are the concrete shard values this instance manages, read from the shard.DefaultKey
+	// label, e.g. {"0", "1"}. Use shard.UnlabeledValue for the instance that manages objects
+	// carrying no shard label.
+	//
+	// Nothing is filtered: the values state what this instance reconciles, and exclusivity is
+	// settled at run time by holding a Lease per value, so two instances configured with the same
+	// value still divide the objects between them rather than duplicating work.
+	//
+	// A value no instance is configured with is reconciled by nobody, deliberately — see
+	// achilles_shard_values_ignored. Assigning the label to objects is the platform's
+	// responsibility; the SDK only reads it, and propagates it from a root object onto the
+	// children that object manages.
+	Values []string
+
+	// Types are the GVKs being partitioned: the types whose shard labels are read to decide
+	// ownership, and whose reconciliation is gated on holding the object's value. Required when
+	// Values is set. It has no corresponding CLI flag and must be set programmatically.
+	//
+	// A GVK left out of this list is reconciled by every instance, so any controller in a sharded
+	// binary needs its root GVK listed here.
+	Types []client.Object
+
+	// InstanceName names this controller instance, and must be the name of its own Deployment.
+	// Required when Values is set; defaults from the INSTANCE_NAME environment variable.
+	//
+	// It names the leader election lock, so pods sharding it are treated by leader election as
+	// replicas of each other. Two Deployments sharing it would therefore have only one of their
+	// value sets served, the other standing by without ever starting a reconciler. Taking the name
+	// from the Deployment makes that impossible by construction, since Kubernetes already
+	// guarantees Deployment names are unique in a namespace.
+	InstanceName string
+}
+
 func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 	// kubeconfig parameters
 	flags.BoolVar(&o.InCluster, "incluster", false, "Uses the in-cluster Kubeconfig. Exactly one of `incluster` or `kubecontext` must be set")
@@ -154,8 +161,8 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 
 	flags.DurationVar(&o.SyncPeriod, "sync-period", 10*time.Hour, "Minimum frequency at which all controllers will perform a reconciliation.")
 
-	flags.StringVar(&o.ShardSelector, "shard-selector", "", fmt.Sprintf("Restricts this instance to the objects matching the given selector, which must reference only %q. Use the negated form to own everything unlabeled. Empty disables sharding", shard.DefaultKey))
-	flags.StringVar(&o.InstanceName, "instance-name", os.Getenv("INSTANCE_NAME"), "Name of this controller instance, which must be the name of its own Deployment. Names the leader election lock. Required when shard-selector is set")
+	flags.StringSliceVar(&o.Shard.Values, "shard-values", nil, fmt.Sprintf("Concrete values of the %q label whose objects this instance reconciles, e.g. \"0,1\". Pass %q for the instance managing objects carrying no shard label. Values no instance is given are reconciled by nobody. Empty disables sharding", shard.DefaultKey, shard.UnlabeledValue))
+	flags.StringVar(&o.Shard.InstanceName, "instance-name", os.Getenv("INSTANCE_NAME"), "Name of this controller instance, which must be the name of its own Deployment. Names the leader election lock. Required when shard-values is set")
 
 	flags.BoolVar(&o.LeaderElection, "leader-election", false, "Enables leader election for the controller (a form of active-passive HA)")
 	flags.StringVar(&o.LeaderElectionID, "leader-election-id", "", "Name of the resource that leader election will use for holding the leader lock")

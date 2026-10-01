@@ -61,11 +61,11 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 
 	// Before the claimed resource is named or created: every shard sees every claim, and an
 	// unowned shard acting on one would bind a second claimed resource to it.
-	if skip, retry := shard.Skip(ctx, claim); skip {
-		if retry {
-			return ctrl.Result{RequeueAfter: shard.PendingRequeueInterval}, nil
-		}
+	switch shard.Check(ctx, claim) {
+	case shard.NotManaged:
 		return ctrl.Result{}, nil
+	case shard.Pending:
+		return ctrl.Result{RequeueAfter: shard.PendingRequeueInterval}, nil
 	}
 
 	claimed := Claimed(new(T))

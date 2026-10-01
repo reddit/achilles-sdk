@@ -129,7 +129,7 @@ var _ = Describe("buildManager", func() {
 
 	// Exercises the whole mechanism against a real API server, whose optimistic concurrency is what
 	// makes lease acquisition mutually exclusive.
-	It("divides the objects in use between two shards with overlapping selectors", func(gctx context.Context) {
+	It("divides the objects between instances and ignores unassigned values", func(gctx context.Context) {
 		log := zaptest.LoggerWriter(GinkgoWriter).Sugar()
 		ctx := logging.NewContext(gctx, log)
 
@@ -146,6 +146,7 @@ var _ = Describe("buildManager", func() {
 		for name, labelSet := range map[string]map[string]string{
 			"in-a":      {shard.DefaultKey: "a"},
 			"in-b":      {shard.DefaultKey: "b"},
+			"in-c":      {shard.DefaultKey: "c"},
 			"unlabeled": nil,
 		} {
 			Expect(testEnv.Client.Create(ctx, &testv1alpha1.TestClaim{
@@ -153,7 +154,7 @@ var _ = Describe("buildManager", func() {
 			})).To(Succeed())
 		}
 
-		opts := &Options{ShardedTypes: []client.Object{&testv1alpha1.TestClaim{}}}
+		opts := &Options{Shard: ShardOptions{Types: []client.Object{&testv1alpha1.TestClaim{}}}}
 		mgr, err := buildManager(testEnv.Cfg, log, runtime.SchemeBuilder{testv1alpha1.AddToScheme}, opts, nil)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -165,7 +166,7 @@ var _ = Describe("buildManager", func() {
 		}()
 		Expect(mgr.GetCache().WaitForCacheSync(mgrCtx)).To(BeTrue())
 
-		gvks, err := shardedGVKs(mgr.GetScheme(), opts.ShardedTypes)
+		gvks, err := shardedGVKs(mgr.GetScheme(), opts.Shard.Types)
 		Expect(err).NotTo(HaveOccurred())
 		group, err := shard.GroupFor(gvks)
 		Expect(err).NotTo(HaveOccurred())
@@ -173,13 +174,13 @@ var _ = Describe("buildManager", func() {
 
 		list := inventoryFunc(mgr, shard.DefaultKey, gvks)
 		Expect(list(mgrCtx)).To(Equal(shard.Inventory{
-			Values:    sets.New("a", "b"),
+			Values:    sets.New("a", "b", "c"),
 			Unlabeled: true,
 		}))
 
-		newOwner := func(instance, identity, selector string) *shard.Owner {
+		newOwner := func(instance, identity string, values ...string) *shard.Owner {
 			return shard.NewOwner(testEnv.Client, shard.OwnerConfig{
-				Shard:     mustParseShard(selector),
+				Shard:     mustParseShard(values...),
 				Group:     group,
 				Instance:  instance,
 				Namespace: "default",
@@ -189,30 +190,37 @@ var _ = Describe("buildManager", func() {
 			})
 		}
 
-		// Both selectors match every unlabeled object and value "b", so the selectors alone cannot
-		// separate these two shards.
-		exceptA := newOwner("ctl-except-a", "pod-1", "shard.infrared.reddit.com/key notin (a)")
-		exceptB := newOwner("ctl-except-b", "pod-2", "shard.infrared.reddit.com/key notin (b)")
+		// Value "c" is in use but assigned to neither instance, and "a" is assigned to both.
+		instA := newOwner("ctl-a", "pod-1", "a", shard.UnlabeledValue)
+		instB := newOwner("ctl-b", "pod-2", "a", "b")
 
-		Expect(exceptA.Sync(mgrCtx)).To(Succeed())
-		Expect(exceptB.Sync(mgrCtx)).To(Succeed())
+		Expect(instA.Sync(mgrCtx)).To(Succeed())
+		Expect(instB.Sync(mgrCtx)).To(Succeed())
 
-		claim := func(name string, labelSet map[string]string) client.Object {
-			return &testv1alpha1.TestClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labelSet}}
+		claim := func(labelSet map[string]string) client.Object {
+			return &testv1alpha1.TestClaim{ObjectMeta: metav1.ObjectMeta{Name: "claim", Labels: labelSet}}
 		}
+		inA := claim(map[string]string{shard.DefaultKey: "a"})
+		inB := claim(map[string]string{shard.DefaultKey: "b"})
+		inC := claim(map[string]string{shard.DefaultKey: "c"})
 
-		Expect(exceptB.Ownership(claim("in-a", map[string]string{shard.DefaultKey: "a"}))).To(Equal(shard.Owned))
-		Expect(exceptA.Ownership(claim("in-b", map[string]string{shard.DefaultKey: "b"}))).To(Equal(shard.Owned))
+		Expect(instA.Ownership(claim(nil))).To(Equal(shard.Owned), "the unlabeled partition is claimed explicitly")
+		Expect(instB.Ownership(inB)).To(Equal(shard.Owned))
 
-		// The contested partitions go to exactly one shard, and the loser defers rather than
+		// Configured with the same value, so exactly one holds it and the other defers rather than
 		// duplicating the work.
-		Expect(exceptA.Ownership(claim("unlabeled", nil))).To(Equal(shard.Owned))
-		Expect(exceptB.Ownership(claim("unlabeled", nil))).To(Equal(shard.Pending))
+		Expect(instA.Ownership(inA)).To(Equal(shard.Owned))
+		Expect(instB.Ownership(inA)).To(Equal(shard.Pending))
+
+		// Assignment is an operator decision, so an unassigned value is reconciled by nobody
+		// rather than falling to whichever instance would otherwise absorb it.
+		Expect(instA.Ownership(inC)).To(Equal(shard.NotManaged))
+		Expect(instB.Ownership(inC)).To(Equal(shard.NotManaged))
 	})
 })
 
-func mustParseShard(raw string) *shard.Shard {
-	s, err := shard.Parse(shard.DefaultKey, raw)
+func mustParseShard(values ...string) *shard.Shard {
+	s, err := shard.Parse(shard.DefaultKey, values)
 	Expect(err).NotTo(HaveOccurred())
 	return s
 }

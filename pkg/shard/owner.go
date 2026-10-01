@@ -21,13 +21,14 @@ const (
 	// Owned means this instance holds the lease on the object's partition.
 	Owned Ownership = iota
 
-	// NotSelected means the object belongs to another shard's slice. Nothing will change that, so
-	// there is nothing to wait for.
-	NotSelected
+	// NotManaged means the object's shard value is not one this instance was configured with,
+	// either because another instance manages it or because no instance does. Nothing will change
+	// that without a configuration change, so there is nothing to wait for.
+	NotManaged
 
-	// Pending means this instance selects the object's partition but does not hold its lease,
-	// either because it has not synced yet or because another shard still holds it. Transient, so
-	// the object is worth revisiting.
+	// Pending means this instance manages the object's partition but does not hold its lease,
+	// either because it has not synced yet or because another instance still holds it. Transient,
+	// so the object is worth revisiting.
 	Pending
 )
 
@@ -36,7 +37,7 @@ type ListFunc func(context.Context) (Inventory, error)
 
 // OwnerConfig configures an Owner.
 type OwnerConfig struct {
-	// Shard is the slice this instance selects.
+	// Shard is the set of values this instance manages.
 	Shard *Shard
 
 	// Group scopes ownership to the controller partitioning these types, so that leases of other
@@ -57,7 +58,7 @@ type OwnerConfig struct {
 	// DefaultLeaseDuration.
 	LeaseDuration time.Duration
 
-	// List enumerates the partitions in use.
+	// List enumerates the partitions in use, used to report the ones no instance manages.
 	List ListFunc
 
 	// Log is optional.
@@ -72,12 +73,12 @@ type heldSet struct {
 }
 
 // Owner arbitrates which instance of a controller reconciles which objects, by holding a Lease per
-// concrete shard value rather than by trusting selectors to be disjoint.
+// managed shard value.
 //
-// Arbitrating over the values in use rather than over the selectors is what makes overlapping
-// selectors safe: two shards may both select a value, but only one can hold its lease, so the
-// objects carrying it are still reconciled once. The cost is that ownership is decided at run time,
-// so a reconcile must consult Ownership rather than assume its cache only contains its own work.
+// Ownership is configured, not inferred: an instance claims exactly the values it was given, so
+// two instances misconfigured with the same value still reconcile its objects once — one holds the
+// lease and the other defers. A value no instance was given is reconciled by nobody and reported
+// through achilles_shard_values_ignored, since which instance should serve it is not ours to guess.
 //
 // Mutual exclusion is as strong as Kubernetes leader election and no stronger: a process stalled
 // past its lease expiry can wake up believing it still holds a value. Leases carry no fencing
@@ -96,17 +97,17 @@ func NewOwner(c client.Client, cfg OwnerConfig) *Owner {
 	return &Owner{client: c, cfg: cfg}
 }
 
-// Shard returns the slice this instance selects.
+// Shard returns the set of values this instance manages.
 func (o *Owner) Shard() *Shard { return o.cfg.Shard }
 
 // Ownership reports whether this instance may reconcile the given object.
 //
-// Before the first sync every selected partition is Pending rather than Owned, since reconciling
-// an object whose lease is unheld is exactly what the lease exists to prevent.
+// Before the first sync every managed partition is Pending rather than Owned, since reconciling an
+// object whose lease is unheld is exactly what the lease exists to prevent.
 func (o *Owner) Ownership(obj client.Object) Ownership {
 	ref := valueOf(obj, o.cfg.Shard.Key())
-	if !ref.selectedBy(o.cfg.Shard) {
-		return NotSelected
+	if !ref.managedBy(o.cfg.Shard) {
+		return NotManaged
 	}
 
 	held := o.held.Load()
@@ -141,34 +142,28 @@ func (o *Owner) Start(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			if err := o.Sync(ctx); err != nil && o.cfg.Log != nil {
-				// A failed sync lets held leases lapse, which hands work to another shard rather
-				// than duplicating it, so it is not worth taking the process down for.
+				// A failed sync lets held leases lapse, which hands work to another instance
+				// rather than duplicating it, so it is not worth taking the process down for.
 				o.cfg.Log.Warnw("syncing shard ownership", "error", err)
 			}
 		}
 	}
 }
 
-// NeedLeaderElection reports that only the leader of a shard holds its values, so that a standby
-// replica does not hold work it will not do.
+// NeedLeaderElection reports that only the leader of an instance holds its values, so that a
+// standby replica does not hold work it will not do.
 func (o *Owner) NeedLeaderElection() bool { return true }
 
-// Sync brings the ownership Leases in line with the partitions in use and with this shard's
-// selector: it creates a Lease for every partition, acquires or renews the ones this shard selects,
-// releases the ones it no longer selects, and deletes the ones no object occupies.
+// Sync acquires or renews a Lease for every value this instance is configured with, releases the
+// ones it no longer is, and reports which partitions in use no instance manages.
 func (o *Owner) Sync(ctx context.Context) error {
-	inventory, err := o.cfg.List(ctx)
-	if err != nil {
-		return fmt.Errorf("listing shard values in use: %w", err)
-	}
-
 	held := &heldSet{values: sets.New[string]()}
-	live := sets.New[string]()
-	var contested, unowned int
+	managed := sets.New[string]()
+	var contested int
 
-	for _, ref := range inventory.refs() {
+	for _, ref := range o.cfg.Shard.refs() {
 		name := valueLeaseName(o.cfg.Group.Name, ref.value, ref.unlabeled)
-		live.Insert(name)
+		managed.Insert(name)
 
 		state, err := o.reconcileLease(ctx, name, ref)
 		if err != nil {
@@ -185,26 +180,61 @@ func (o *Owner) Sync(ctx context.Context) error {
 		case leaseContested:
 			contested++
 			if o.cfg.Log != nil {
-				o.cfg.Log.Warnw("shard value is selected but held by another shard",
+				o.cfg.Log.Warnw("shard value is managed by this instance but held by another",
 					"value", ref.String(), "shard", o.cfg.Shard.ID())
-			}
-		case leaseUnowned:
-			unowned++
-			if o.cfg.Log != nil {
-				o.cfg.Log.Warnw("shard value is owned by no instance, its objects go unreconciled",
-					"value", ref.String())
 			}
 		}
 	}
 
 	o.held.Store(held)
 
-	if err := o.prune(ctx, live); err != nil {
+	inUse, err := o.reportPartitionsInUse(ctx)
+	if err != nil {
+		return err
+	}
+	if err := o.releaseStale(ctx, managed, inUse); err != nil {
 		return err
 	}
 
-	recordOwnership(o.cfg.Group.Name, o.cfg.Shard.ID(), len(held.values), contested, unowned)
+	recordOwnership(o.cfg.Group.Name, o.cfg.Shard.ID(), held.count(), contested)
 	return nil
+}
+
+func (h *heldSet) count() int {
+	n := h.values.Len()
+	if h.unlabeled {
+		n++
+	}
+	return n
+}
+
+// reportPartitionsInUse records, for every partition objects actually occupy, whether this instance
+// ignores it. Returns the lease names of those partitions.
+//
+// Both outcomes are recorded, not just the ignored ones, so that a partition ignored by *every*
+// instance is identifiable as one whose series are all 1. Reporting only the ignored ones would
+// instead require knowing how many instances are running.
+func (o *Owner) reportPartitionsInUse(ctx context.Context) (sets.Set[string], error) {
+	inventory, err := o.cfg.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing shard values in use: %w", err)
+	}
+
+	names := sets.New[string]()
+	ignored := map[string]bool{}
+	for _, ref := range inventory.refs() {
+		names.Insert(valueLeaseName(o.cfg.Group.Name, ref.value, ref.unlabeled))
+
+		managed := ref.managedBy(o.cfg.Shard)
+		ignored[ref.String()] = !managed
+		if !managed && o.cfg.Log != nil {
+			o.cfg.Log.Debugw("ignoring shard value, this instance does not manage it",
+				"value", ref.String(), "shard", o.cfg.Shard.ID())
+		}
+	}
+
+	recordIgnored(o.cfg.Group.Name, o.cfg.Shard.ID(), ignored)
+	return names, nil
 }
 
 // leaseState is the outcome of reconciling one partition's Lease.
@@ -217,19 +247,16 @@ const (
 	leaseHeldByOther
 )
 
-// reconcileLease drives one partition's Lease towards the state this shard wants for it.
+// reconcileLease drives one managed partition's Lease towards being held by this instance.
 //
 // Acquisition is a conflict-checked write against the resource version just read, so two instances
-// racing for the same value cannot both succeed. That is the difference between this and comparing
-// selectors at startup, which could only detect a conflict that had already happened.
+// misconfigured with the same value cannot both succeed.
 func (o *Owner) reconcileLease(ctx context.Context, name string, ref valueRef) (leaseState, error) {
-	selected := ref.selectedBy(o.cfg.Shard)
-
 	var lease coordinationv1.Lease
 	err := o.client.Get(ctx, client.ObjectKey{Namespace: o.cfg.Namespace, Name: name}, &lease)
 
 	if apierrors.IsNotFound(err) {
-		created, err := o.create(ctx, name, ref, selected)
+		created, err := o.create(ctx, name, ref)
 		if err == nil {
 			return created, nil
 		}
@@ -241,72 +268,48 @@ func (o *Owner) reconcileLease(ctx context.Context, name string, ref valueRef) (
 		if err := o.client.Get(ctx, client.ObjectKey{Namespace: o.cfg.Namespace, Name: name}, &lease); err != nil {
 			return leaseUnowned, fmt.Errorf("getting ownership lease for value %s: %w", ref, err)
 		}
-		return o.stateOf(&lease, selected), nil
+		return o.stateOf(&lease), nil
 	}
 	if err != nil {
 		return leaseUnowned, fmt.Errorf("getting ownership lease for value %s: %w", ref, err)
 	}
 
-	switch {
-	case heldBy(&lease) == o.cfg.Identity && selected:
+	if heldBy(&lease) == o.cfg.Identity || o.mayTakeOver(&lease) {
 		return o.write(ctx, &lease, ref, o.cfg.Identity, leaseHeld)
-
-	case heldBy(&lease) == o.cfg.Identity && !selected:
-		// Releasing rather than letting it expire lets another shard pick the value up at once.
-		if _, err := o.write(ctx, &lease, ref, "", leaseUnowned); err != nil {
-			return leaseUnowned, err
-		}
-		return leaseUnowned, nil
-
-	case selected && o.mayTakeOver(&lease):
-		return o.write(ctx, &lease, ref, o.cfg.Identity, leaseHeld)
-
-	default:
-		return o.stateOf(&lease, selected), nil
 	}
+	return o.stateOf(&lease), nil
 }
 
 // mayTakeOver reports whether this instance can claim a lease it does not hold.
 //
 // A lease labelled with our own instance belongs to a predecessor leader of this very Deployment:
 // leader election guarantees one leader per instance at a time, so waiting out its expiry would only
-// add failover latency. Keying on the instance rather than the shard also keeps a selector edit a
-// clean rolling update, since the incoming pod reclaims its predecessor's values immediately even
-// though its shard ID has changed.
+// add failover latency. Keying on the instance rather than the shard also keeps a change to the
+// managed values a clean rolling update, since the incoming pod reclaims its predecessor's values
+// immediately even though its shard ID has changed.
 func (o *Owner) mayTakeOver(lease *coordinationv1.Lease) bool {
 	return heldBy(lease) == "" ||
 		expired(lease) ||
 		lease.Labels[InstanceLabelKey] == o.cfg.Instance
 }
 
-func (o *Owner) stateOf(lease *coordinationv1.Lease, selected bool) leaseState {
-	switch {
-	case heldBy(lease) == "" || expired(lease):
+func (o *Owner) stateOf(lease *coordinationv1.Lease) leaseState {
+	if heldBy(lease) == "" || expired(lease) {
 		return leaseUnowned
-	case selected:
-		return leaseContested
-	default:
-		return leaseHeldByOther
 	}
+	return leaseContested
 }
 
-func (o *Owner) create(ctx context.Context, name string, ref valueRef, selected bool) (leaseState, error) {
+func (o *Owner) create(ctx context.Context, name string, ref valueRef) (leaseState, error) {
 	lease := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: o.cfg.Namespace},
 	}
 
-	identity := ""
-	state := leaseUnowned
-	if selected {
-		identity = o.cfg.Identity
-		state = leaseHeld
-	}
-
-	o.stampValue(lease, ref, identity)
+	o.stampValue(lease, ref, o.cfg.Identity)
 	if err := o.client.Create(ctx, lease); err != nil {
 		return leaseUnowned, err
 	}
-	return state, nil
+	return leaseHeld, nil
 }
 
 // write persists an ownership change, treating a lost race as a state to re-evaluate next sync
@@ -339,7 +342,9 @@ func (o *Owner) stampValue(lease *coordinationv1.Lease, ref valueRef, identity s
 	if lease.Annotations == nil {
 		lease.Annotations = map[string]string{}
 	}
-	lease.Annotations[ValueAnnotationKey] = ref.value
+	// The resolved value, spelled as --shard-values takes it, since the Lease name only
+	// approximates it once a value is long enough or odd enough to need hashing.
+	lease.Annotations[ValueAnnotationKey] = ref.String()
 	lease.Annotations[TypesAnnotationKey] = o.cfg.Group.Types
 
 	now := metav1.NewMicroTime(time.Now())
@@ -364,9 +369,12 @@ func (o *Owner) stampValue(lease *coordinationv1.Lease, ref valueRef, identity s
 	lease.Spec.HolderIdentity = &identity
 }
 
-// prune deletes the Leases of partitions no object occupies, keeping the Lease set a faithful map
-// of the shard values actually in use.
-func (o *Owner) prune(ctx context.Context, live sets.Set[string]) error {
+// releaseStale gives up the leases this instance holds for values it is no longer configured with,
+// and deletes the leases of partitions that neither any object occupies nor this instance manages.
+//
+// Releasing rather than waiting for expiry lets the instance now configured with the value pick it
+// up at once, which is what makes a change to --shard-values a clean rolling update.
+func (o *Owner) releaseStale(ctx context.Context, managed, inUse sets.Set[string]) error {
 	leases, err := o.listValueLeases(ctx)
 	if err != nil {
 		return err
@@ -374,11 +382,24 @@ func (o *Owner) prune(ctx context.Context, live sets.Set[string]) error {
 
 	for i := range leases {
 		lease := &leases[i]
-		if live.Has(lease.Name) {
+		if managed.Has(lease.Name) {
 			continue
 		}
-		if err := o.client.Delete(ctx, lease); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("deleting stale ownership lease %s: %w", lease.Name, err)
+
+		if heldBy(lease) == o.cfg.Identity {
+			ref := refFromLease(lease)
+			if _, err := o.write(ctx, lease, ref, "", leaseUnowned); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Unheld and occupied by nothing: no instance can want it, and whichever instance is
+		// configured with it recreates it on its next sync.
+		if heldBy(lease) == "" && !inUse.Has(lease.Name) {
+			if err := o.client.Delete(ctx, lease); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("deleting stale ownership lease %s: %w", lease.Name, err)
+			}
 		}
 	}
 	return nil
@@ -393,6 +414,16 @@ func (o *Owner) listValueLeases(ctx context.Context) ([]coordinationv1.Lease, er
 		return nil, fmt.Errorf("listing ownership leases: %w", err)
 	}
 	return leases.Items, nil
+}
+
+// refFromLease recovers the partition a Lease confers from its annotation, which holds the value
+// verbatim even when the name had to be hashed.
+func refFromLease(lease *coordinationv1.Lease) valueRef {
+	value := lease.Annotations[ValueAnnotationKey]
+	if value == UnlabeledValue {
+		return valueRef{unlabeled: true}
+	}
+	return valueRef{value: value}
 }
 
 func heldBy(lease *coordinationv1.Lease) string {

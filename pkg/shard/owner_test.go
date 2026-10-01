@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -22,11 +23,12 @@ func inventory(unlabeled bool, values ...string) ListFunc {
 }
 
 // mustOwner builds an Owner for one pod (identity) of one Deployment (instance).
-func mustOwner(t *testing.T, c client.Client, instance, identity, selector string, list ListFunc) *Owner {
+func mustOwner(t *testing.T, c client.Client, instance, identity string, values []string, list ListFunc) *Owner {
 	t.Helper()
 
-	s, err := Parse(DefaultKey, selector)
+	s, err := Parse(DefaultKey, values)
 	require.NoError(t, err)
+	require.NotNil(t, s)
 
 	return NewOwner(c, OwnerConfig{
 		Shard:     s,
@@ -38,7 +40,8 @@ func mustOwner(t *testing.T, c client.Client, instance, identity, selector strin
 	})
 }
 
-// holders maps each value to the identity currently holding its lease, "" when unheld.
+// holders maps each value with a lease to the identity holding it, "" when unheld. A value absent
+// from the map has no lease at all, which is how an unmanaged value looks.
 func holders(t *testing.T, c client.Client) map[string]string {
 	t.Helper()
 
@@ -88,78 +91,92 @@ func obj(value string, labelled bool) client.Object {
 	return o
 }
 
-// The scenario the selector-only safeguard could not handle: two shards that exclude disjoint
-// values both select a value neither anticipated, so both would reconcile it. Exactly one may end
-// up holding its lease.
-func TestNewValueIsClaimedByExactlyOneOverlappingShard(t *testing.T) {
+func ignoredMetric(t *testing.T, o *Owner, value string) float64 {
+	t.Helper()
+	return testutil.ToFloat64(valuesIgnored.WithLabelValues(
+		o.cfg.Group.Name, o.cfg.Shard.ID(), value))
+}
+
+// The defining behaviour of configured sharding: a value nobody was configured with is reconciled
+// by nobody, and says so, rather than being assigned to whichever instance happens to claim it.
+func TestNewValueIsIgnoredUntilAnInstanceIsConfiguredWithIt(t *testing.T) {
 	c := testClient()
 	list := inventory(false, "0", "1", "2", "3")
 
-	a := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key notin (0,1)", list)
-	b := mustOwner(t, c, "inst-b", "pod-b", "shard.infrared.reddit.com/key notin (2,3)", list)
-
+	a := mustOwner(t, c, "inst-a", "pod-a", []string{"0", "1"}, list)
+	b := mustOwner(t, c, "inst-b", "pod-b", []string{"2", "3"}, list)
 	require.NoError(t, a.Sync(context.Background()))
 	require.NoError(t, b.Sync(context.Background()))
+	require.Equal(t, "pod-a", holders(t, c)["0"], "precondition: the configured values are served")
 
-	require.Equal(t, "pod-a", holders(t, c)["2"], "precondition: a owns the values b excludes")
-	require.Equal(t, "pod-b", holders(t, c)["0"], "precondition: b owns the values a excludes")
-
-	// A fourth value appears. Both selectors match it.
+	// A fourth value appears that neither instance was configured with.
 	list = inventory(false, "0", "1", "2", "3", "4")
-	a = mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key notin (0,1)", list)
-	b = mustOwner(t, c, "inst-b", "pod-b", "shard.infrared.reddit.com/key notin (2,3)", list)
-
+	a = mustOwner(t, c, "inst-a", "pod-a", []string{"0", "1"}, list)
+	b = mustOwner(t, c, "inst-b", "pod-b", []string{"2", "3"}, list)
 	require.NoError(t, a.Sync(context.Background()))
 	require.NoError(t, b.Sync(context.Background()))
 
-	assert.Equal(t, "pod-a", holders(t, c)["4"], "the first to acquire keeps it")
+	assert.NotContains(t, holders(t, c), "4", "an unmanaged value gets no lease")
+	assert.Equal(t, NotManaged, a.Ownership(obj("4", true)))
+	assert.Equal(t, NotManaged, b.Ownership(obj("4", true)))
+
+	// Every instance reporting 1 is what makes "ignored by all" answerable without counting pods.
+	assert.Equal(t, 1.0, ignoredMetric(t, a, "4"))
+	assert.Equal(t, 1.0, ignoredMetric(t, b, "4"))
+	assert.Equal(t, 0.0, ignoredMetric(t, a, "0"), "a value this instance manages is not ignored")
+
+	// Configuring an instance with it is what assigns it.
+	a = mustOwner(t, c, "inst-a", "pod-a", []string{"0", "1", "4"}, list)
+	require.NoError(t, a.Sync(context.Background()))
+
+	assert.Equal(t, "pod-a", holders(t, c)["4"])
 	assert.Equal(t, Owned, a.Ownership(obj("4", true)))
-	assert.Equal(t, Pending, b.Ownership(obj("4", true)),
-		"b still selects value 4 but must not reconcile it while a holds the lease")
+	assert.Equal(t, 0.0, ignoredMetric(t, a, "4"))
 }
 
-func TestSyncAcquiresOnlySelectedValues(t *testing.T) {
+func TestSyncAcquiresExactlyTheConfiguredValues(t *testing.T) {
 	c := testClient()
-	o := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0", "1", "2", "3"))
+	o := mustOwner(t, c, "inst-a", "pod-a", []string{"0", "1"}, inventory(false, "0", "1", "2", "3"))
 
 	require.NoError(t, o.Sync(context.Background()))
 
-	assert.Equal(t, map[string]string{"0": "pod-a", "1": "pod-a", "2": "", "3": ""}, holders(t, c),
-		"a lease exists for every value, but only the selected ones are held")
+	assert.Equal(t, map[string]string{"0": "pod-a", "1": "pod-a"}, holders(t, c),
+		"leases exist for the configured values and for nothing else")
 }
 
-func TestSyncConvergesLeaseSetOntoValuesInUse(t *testing.T) {
+// Ownership is settled from configuration, so it does not wait for an object to turn up. This is
+// what removes the window in which a value's first object could be reconciled by two instances.
+func TestSyncHoldsAConfiguredValueNoObjectCarriesYet(t *testing.T) {
 	c := testClient()
-	o := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0", "1"))
-	require.NoError(t, o.Sync(context.Background()))
-	require.Contains(t, holders(t, c), "1")
+	o := mustOwner(t, c, "inst-a", "pod-a", []string{"0", "9"}, inventory(false, "0"))
 
-	// Value 1 falls out of use.
-	o = mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0"))
 	require.NoError(t, o.Sync(context.Background()))
 
-	assert.Equal(t, map[string]string{"0": "pod-a"}, holders(t, c),
-		"a lease for a value no object carries is garbage")
+	assert.Equal(t, "pod-a", holders(t, c)["9"])
+	assert.Equal(t, Owned, o.Ownership(obj("9", true)))
 }
 
 func TestSyncClaimsTheUnlabeledSentinel(t *testing.T) {
 	c := testClient()
-	catchAll := mustOwner(t, c, "inst-catchall", "pod-catchall", "!shard.infrared.reddit.com/key", inventory(true, "0"))
+	catchAll := mustOwner(t, c, "inst-catchall", "pod-catchall", []string{UnlabeledValue}, inventory(true, "0"))
 	require.NoError(t, catchAll.Sync(context.Background()))
 
 	assert.Equal(t, Owned, catchAll.Ownership(obj("", false)))
-	assert.Equal(t, NotSelected, catchAll.Ownership(obj("0", true)))
+	assert.Equal(t, NotManaged, catchAll.Ownership(obj("0", true)))
+	assert.Equal(t, 1.0, ignoredMetric(t, catchAll, "0"))
+	assert.Equal(t, 0.0, ignoredMetric(t, catchAll, UnlabeledValue))
 }
 
+// Two Deployments misconfigured with one value is the case the lease exists for: both manage it, so
+// both try, and the loser must defer rather than duplicate the work.
 func TestSyncDoesNotStealALiveLeaseFromAnotherInstance(t *testing.T) {
 	c := testClient()
 	list := inventory(false, "0", "1")
 
-	held := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", list)
+	held := mustOwner(t, c, "inst-a", "pod-a", []string{"0"}, list)
 	require.NoError(t, held.Sync(context.Background()))
 
-	// A different Deployment, misconfigured to also select value 0.
-	thief := mustOwner(t, c, "inst-b", "pod-b", "shard.infrared.reddit.com/key in (0,1)", list)
+	thief := mustOwner(t, c, "inst-b", "pod-b", []string{"0", "1"}, list)
 	require.NoError(t, thief.Sync(context.Background()))
 
 	assert.Equal(t, "pod-a", holders(t, c)["0"], "the incumbent keeps a live lease")
@@ -171,7 +188,7 @@ func TestSyncTakesOverAnExpiredLease(t *testing.T) {
 	c := testClient()
 	require.NoError(t, c.Create(context.Background(), valueLease("0", "inst-dead", "dead-pod", time.Hour)))
 
-	o := mustOwner(t, c, "inst-b", "pod-b", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	o := mustOwner(t, c, "inst-b", "pod-b", []string{"0"}, inventory(false, "0"))
 	require.NoError(t, o.Sync(context.Background()))
 
 	assert.Equal(t, "pod-b", holders(t, c)["0"], "a holder that stopped renewing has gone")
@@ -184,47 +201,64 @@ func TestSyncTakesOverItsOwnInstancesLeaseImmediately(t *testing.T) {
 	c := testClient()
 	require.NoError(t, c.Create(context.Background(), valueLease("0", "inst-a", "previous-leader", time.Second)))
 
-	o := mustOwner(t, c, "inst-a", "new-leader", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	o := mustOwner(t, c, "inst-a", "new-leader", []string{"0"}, inventory(false, "0"))
 	require.NoError(t, o.Sync(context.Background()))
 
 	assert.Equal(t, "new-leader", holders(t, c)["0"])
 }
 
-// Keying takeover on the instance rather than the shard is what makes editing a selector a clean
-// rolling update: the incoming pod's shard differs, but it is the same Deployment.
-func TestSyncTakesOverItsOwnInstancesLeaseAfterASelectorEdit(t *testing.T) {
+// Keying takeover on the instance rather than the shard is what makes editing --shard-values a
+// clean rolling update: the incoming pod's shard differs, but it is the same Deployment.
+func TestSyncTakesOverItsOwnInstancesLeaseAfterAValuesEdit(t *testing.T) {
 	c := testClient()
 	list := inventory(false, "0", "1")
 
-	before := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", list)
+	before := mustOwner(t, c, "inst-a", "pod-a", []string{"0"}, list)
 	require.NoError(t, before.Sync(context.Background()))
 	require.NotEqual(t, before.Shard().ID(), "0-1", "precondition: the edit changes the shard ID")
 
-	after := mustOwner(t, c, "inst-a", "pod-b", "shard.infrared.reddit.com/key in (0,1)", list)
+	after := mustOwner(t, c, "inst-a", "pod-b", []string{"0", "1"}, list)
 	require.NoError(t, after.Sync(context.Background()))
 
 	assert.Equal(t, map[string]string{"0": "pod-b", "1": "pod-b"}, holders(t, c))
 }
 
-func TestSyncReleasesValuesThatFallOutOfTheSelector(t *testing.T) {
+func TestSyncReleasesValuesRemovedFromTheConfiguration(t *testing.T) {
 	c := testClient()
-	wide := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0,1)", inventory(false, "0", "1"))
+	wide := mustOwner(t, c, "inst-a", "pod-a", []string{"0", "1"}, inventory(false, "0", "1"))
 	require.NoError(t, wide.Sync(context.Background()))
 	require.Equal(t, "pod-a", holders(t, c)["1"])
 
-	narrow := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0", "1"))
+	narrow := mustOwner(t, c, "inst-a", "pod-a", []string{"0"}, inventory(false, "0", "1"))
 	require.NoError(t, narrow.Sync(context.Background()))
 
-	assert.Equal(t, "", holders(t, c)["1"], "a released value must be free for another shard at once")
-	assert.Equal(t, NotSelected, narrow.Ownership(obj("1", true)))
+	assert.Equal(t, "", holders(t, c)["1"], "a released value must be free for another instance at once")
+	assert.Equal(t, NotManaged, narrow.Ownership(obj("1", true)))
+	assert.Equal(t, 1.0, ignoredMetric(t, narrow, "1"), "and is now ignored by this instance")
+}
+
+// A lease for a value that is neither configured nor carried by any object is garbage; whichever
+// instance is configured with it recreates it.
+func TestSyncDeletesLeasesForValuesNeitherManagedNorInUse(t *testing.T) {
+	c := testClient()
+	wide := mustOwner(t, c, "inst-a", "pod-a", []string{"0", "1"}, inventory(false, "0", "1"))
+	require.NoError(t, wide.Sync(context.Background()))
+
+	// Value 1 is dropped from the configuration and falls out of use. Two syncs: the first
+	// releases it, the second finds it unheld and unused.
+	narrow := mustOwner(t, c, "inst-a", "pod-a", []string{"0"}, inventory(false, "0"))
+	require.NoError(t, narrow.Sync(context.Background()))
+	require.NoError(t, narrow.Sync(context.Background()))
+
+	assert.Equal(t, map[string]string{"0": "pod-a"}, holders(t, c))
 }
 
 func TestOwnershipBeforeFirstSyncIsPendingNotOwned(t *testing.T) {
-	o := mustOwner(t, testClient(), "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	o := mustOwner(t, testClient(), "inst-a", "pod-a", []string{"0"}, inventory(false, "0"))
 
 	assert.Equal(t, Pending, o.Ownership(obj("0", true)),
 		"reconciling before any lease is held would defeat the point of holding one")
-	assert.Equal(t, NotSelected, o.Ownership(obj("9", true)))
+	assert.Equal(t, NotManaged, o.Ownership(obj("9", true)))
 }
 
 // Another controller partitioning different types shares the namespace but not the group, so its
@@ -237,7 +271,7 @@ func TestSyncIgnoresOtherGroupsLeases(t *testing.T) {
 	foreign.Labels[GroupLabelKey] = "othertype"
 	require.NoError(t, c.Create(context.Background(), foreign))
 
-	o := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	o := mustOwner(t, c, "inst-a", "pod-a", []string{"0"}, inventory(false, "0"))
 	require.NoError(t, o.Sync(context.Background()))
 
 	assert.Equal(t, "pod-a", holders(t, c)["0"], "another controller's leases are unrelated")
@@ -251,7 +285,7 @@ func TestSyncIgnoresOtherGroupsLeases(t *testing.T) {
 // Only the leader of an instance may hold its values; a standby replica holding work it will not do
 // would strand that work.
 func TestOwnerIsLeaderGated(t *testing.T) {
-	o := mustOwner(t, testClient(), "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0"))
+	o := mustOwner(t, testClient(), "inst-a", "pod-a", []string{"0"}, inventory(false, "0"))
 	assert.True(t, o.NeedLeaderElection())
 }
 

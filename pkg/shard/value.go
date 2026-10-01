@@ -16,7 +16,7 @@ const (
 	// picks up the other.
 	KindLabelKey = "shard.infrared.reddit.com/kind"
 
-	// kindAdvertisement marks the Lease publishing a shard's selector.
+	// kindAdvertisement marks the Lease publishing the values a shard manages.
 	kindAdvertisement = "advertisement"
 
 	// kindValue marks the Lease conferring ownership of one concrete shard value.
@@ -46,24 +46,26 @@ type valueRef struct {
 	unlabeled bool
 }
 
-// selectedBy reports whether a shard claims this partition.
-func (r valueRef) selectedBy(s *Shard) bool {
+// managedBy reports whether a shard manages this partition.
+func (r valueRef) managedBy(s *Shard) bool {
 	if r.unlabeled {
-		return s.MatchesUnlabeled()
+		return s.OwnsUnlabeled()
 	}
-	return s.Matches(r.value)
+	return s.Owns(r.value)
 }
 
+// String renders the partition the way an operator configures it, so that a reported value can be
+// pasted straight into --shard-values.
 func (r valueRef) String() string {
 	if r.unlabeled {
-		return "<unlabeled>"
+		return UnlabeledValue
 	}
 	return r.value
 }
 
-// Inventory is the set of shard partitions objects actually occupy, as opposed to the unbounded set
-// a selector could describe. Ownership is arbitrated over this set, which is what lets two shards
-// with overlapping selectors still divide the objects cleanly.
+// Inventory is the set of shard partitions objects actually occupy. Ownership is configured rather
+// than discovered, so this is used to report the partitions no instance manages, not to decide
+// what to claim.
 type Inventory struct {
 	// Values are the distinct shard label values in use.
 	Values sets.Set[string]
@@ -72,8 +74,8 @@ type Inventory struct {
 	Unlabeled bool
 }
 
-// refs returns the partitions in a deterministic order, so that concurrently syncing owners
-// contend for leases in the same sequence.
+// refs returns the partitions in a deterministic order, so that reported values are stable between
+// syncs.
 func (i Inventory) refs() []valueRef {
 	values := i.Values.UnsortedList()
 	sort.Strings(values)
@@ -83,6 +85,19 @@ func (i Inventory) refs() []valueRef {
 		refs = append(refs, valueRef{value: v})
 	}
 	if i.Unlabeled {
+		refs = append(refs, valueRef{unlabeled: true})
+	}
+	return refs
+}
+
+// refs returns the partitions this shard manages, in a deterministic order so that concurrently
+// syncing owners contend for leases in the same sequence.
+func (s *Shard) refs() []valueRef {
+	refs := make([]valueRef, 0, s.values.Len()+1)
+	for _, v := range sets.List(s.values) {
+		refs = append(refs, valueRef{value: v})
+	}
+	if s.unlabeled {
 		refs = append(refs, valueRef{unlabeled: true})
 	}
 	return refs

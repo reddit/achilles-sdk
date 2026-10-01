@@ -5,62 +5,56 @@ radius. Sharding lets several instances of the same controller run in one cluste
 a mutually exclusive slice of those objects.
 
 Each object is assigned to a shard with the `shard.infrared.reddit.com/key` label, and each instance
-is told which values it claims:
+is told which concrete values it manages:
 
 ```
---shard-selector=shard.infrared.reddit.com/key=shard1
+--shard-values=0,1
 ```
 
-The selector **claims** values; it does not filter anything. Every instance still watches and caches
-every object, and exclusivity is settled at run time: the SDK holds a Lease per concrete shard value
+The values **claim** objects; they do not filter anything. Every instance still watches and caches
+every object, and exclusivity is settled at run time: the SDK holds a Lease per managed shard value
 and an instance reconciles an object only while it holds the Lease on that object's value.
-
-That indirection is the whole design. Selectors describe an unbounded space of values, so two
-selectors can only ever be *proven* disjoint over the values that exist today — which makes any
-selector-only scheme wrong the moment a new value appears. Leases are taken over the values actually
-in use, a finite set, so overlapping selectors still divide the objects cleanly.
-
-The label convention and selector grammar follow
-[Flux's sharding](https://fluxcd.io/flux/installation/configuration/sharding/); the ownership
-mechanism does not.
 
 ## Enabling it
 
-Sharding is opt-in per controller, and needs three things beyond the selector.
+Sharding is opt-in per controller, and needs three things beyond `--shard-values`.
 
-**Declare the root types being partitioned.** These are the types whose labels are scanned to
-discover the values in use, and whose reconciliation is gated on ownership:
+1. **Declare the GVKs being partitioned.** These are the types whose labels are read to decide
+   ownership, and whose reconciliation is gated on it:
 
-```go
-opts := &bootstrap.Options{
-	ShardedTypes: []client.Object{&v1alpha1.MyRoot{}},
-}
-opts.AddToFlags(flags)
-```
+   ```go
+   opts := &bootstrap.Options{
+   	Shard: bootstrap.ShardOptions{
+   		Types: []client.Object{&v1alpha1.MyRoot{}},
+   	},
+   }
+   opts.AddToFlags(flags)
+   ```
 
-> A root type left out of this list is reconciled by **every** shard. If your binary registers
-> several controllers, every one of their root types belongs here.
+   > A GVK left out of this list is reconciled by **every** instance. If your binary registers
+   > several controllers, every one of their root GVKs belongs here.
 
-**Run each shard as its own Deployment, and give the SDK that Deployment's name.** Every shard needs
-its own leader election lock, and the lock is named after this:
+2. **Run each instance as its own Deployment, and give the SDK that Deployment's name.** Every
+   instance needs its own leader election lock, and the lock is named after this:
 
-```yaml
-env:
-  - name: INSTANCE_NAME
-    valueFrom:
-      fieldRef:
-        fieldPath: metadata.labels['app']   # must equal the Deployment name
-```
+   ```yaml
+   env:
+     - name: INSTANCE_NAME
+       valueFrom:
+         fieldRef:
+           fieldPath: metadata.labels['app']   # must equal the Deployment name
+   ```
 
-`--instance-name` overrides it. The SDK refuses to start without one, and refuses to start if
-`--leader-election-id` is also set — the lock has exactly one source of truth.
+   `--instance-name` overrides it. The SDK refuses to start without one, and refuses to start if
+   `--leader-election-id` is also set — the lock has exactly one source of truth.
 
-The Deployment name is used rather than anything derived from the selector because Kubernetes
-already guarantees Deployment names are unique in a namespace. Two shards therefore cannot share a
-lock, and editing a selector does not rename the lock.
+   The Deployment name is used rather than anything derived from the values because Kubernetes
+   already guarantees Deployment names are unique in a namespace. Two instances therefore cannot
+   share a lock, and editing `--shard-values` does not rename the lock.
 
-**Set `--leader-election`.** Only the leader of a shard claims its values, so without it two
-replicas of one shard would both claim and both reconcile. The SDK refuses to start without it.
+3. **Set `--leader-election`.** Only the leader of an instance claims its values, so without it two
+   replicas of one instance would both claim and both reconcile. The SDK refuses to start without
+   it.
 
 ## Assigning objects to shards
 
@@ -69,74 +63,84 @@ Kustomization, an admission policy, or whatever creates the objects.
 
 The SDK does propagate the label from a root object onto the children that root manages, so children
 always agree with their owner's shard. The value comes from the root rather than from the instance's
-own selector, which stays correct when a selector claims several values.
+own configuration, which stays correct when an instance manages several values.
 
 ## Always run a catch-all
 
-Objects carrying no shard label form their own partition, with its own Lease. Run exactly one
-instance with the negated selector so that partition has an owner:
+Objects carrying no shard label form their own partition, with its own Lease. It is claimed
+explicitly, by the reserved value `@unlabeled`, so run exactly one instance with it:
 
 ```
---shard-selector=!shard.infrared.reddit.com/key
+--shard-values=@unlabeled
 ```
 
-This works because Kubernetes treats `!=`, `notin`, and `!key` as satisfied by objects that do not
-carry the key at all. Note there is no `OR` in the selector grammar, so "my shard or unlabeled"
-cannot be written as a single selector.
+Spelled with a leading `@` because Kubernetes label values are alphanumeric with dashes, dots, and
+underscores — so the sentinel cannot collide with a real value. An instance may mix it with
+ordinary values, e.g. `--shard-values=0,1,@unlabeled`.
 
 ## New shard values
 
-Nothing to do. A value appearing is discovered on the next ownership sync, its Lease is created, and
-whichever instance claims it acquires it. If several instances claim it, one wins and the others
-defer — the objects are reconciled exactly once either way.
+New shard values appearing at runtime are **ignored until an instance is configured with them**.
+Their objects are reconciled by nobody, and every instance reports them as ignored so this is
+visible rather than silent:
 
-This is the case a selector-only scheme cannot get right. `notin (0,1)` and `notin (2,3)` look like
-a clean split of the values in use, but both claim every value neither excludes, so a new value 4
-belongs to both. Arbitrating over the concrete value means exactly one of them serves it.
+```
+min by (group, value) (achilles_shard_values_ignored) == 1
+```
 
-## Two shards must never share a name
+A value is reported by every instance, `0` when that instance manages it and `1` when it does not,
+which is what makes "ignored by *all* instances" answerable without knowing how many are running.
 
-This is the one sharding misconfiguration the SDK still refuses to run on, because it is the only
-one nothing downstream can recover from. Leader election compares nothing but the lock name, so two
+This is deliberate. Which instance should serve a new value is an operator decision — capacity,
+blast radius, which tier the value belongs to — so the SDK reports the value and waits rather than
+letting whichever instance happens to claim the widest slice absorb it. Assigning it is an edit to
+one Deployment's `--shard-values` and a rolling update.
+
+## Two Pods sharing a leader election ID must agree on their shard values
+
+This is the one sharding misconfiguration the SDK refuses to run on, because it is the only one
+nothing downstream can recover from. Leader election compares nothing but the lock name, so two
 Deployments given one instance name look to it like ordinary replicas of each other: one wins, the
-other stands by without ever starting a reconciler, and its shard's objects go unreconciled while
-its pod stays `Running` and passes its probes.
+other stands by without ever starting a reconciler, and its values go unreconciled while its pod
+stays `Running` and passes its probes.
 
 Taking the name from the Deployment makes this near-impossible, but a copied manifest can still get
-it wrong, so a peer advertising our instance name with a different selector is fatal:
+it wrong, so a peer advertising our instance name with different shard values is fatal:
 
 ```
 instance name "application-controller-workload-standard" is already advertising the different
-selector "shard.infrared.reddit.com/key in (0,1)" (held by "peer-pod"): two instances sharing a
-name share a leader election lock, so one shard would never run; give each instance the name of
-its own Deployment
+shard values "2,3" (held by "peer-pod"): pods sharing an instance name share a leader election
+lock, so only one set of values would ever be served; give each instance the name of its own
+Deployment
 ```
 
-## Overlapping selectors
+Replicas of one instance that agree are fine, including during a rolling update, and the order the
+values are given in does not matter.
 
-Overlap is safe but almost never intended, so the SDK reports it without refusing to run. Each
-instance publishes its selector in an advertisement Lease, and warns when a different instance of
-the same controller advertises an overlapping one:
+## Overlapping shard values
+
+Two instances configured with the same value is safe but almost never intended, so the SDK reports
+it without refusing to run. Each instance publishes its values in an advertisement Lease, and warns
+when a different instance of the same controller advertises any of ours:
 
 ```
-shard selector overlaps another shard of this controller, so which shard serves the overlapping
-values is arbitrary   overlap: selector "shard.infrared.reddit.com/key notin (0,1)" overlaps shard
-"not-2-3" (selector "shard.infrared.reddit.com/key notin (2,3)", held by "peer-pod") on objects
-carrying no shard label and every shard value except 0, 1, 2, 3
+another instance of this controller manages one of this instance's shard values, so which of them
+serves it is arbitrary   overlap: shard values "0,1" overlap instance "app-controller-critical"
+(values "1,2", held by "peer-pod") on the shard value(s) 1
 ```
 
-Overlap costs you predictability, not correctness: the assignment of the overlapping values to
-shards becomes incidental rather than designed. Name the slices you want owned and negate once —
-`in (0,1)` paired with `notin (0,1)` is disjoint and total.
+Overlap costs you predictability, not correctness: the value's Lease still goes to exactly one
+instance, so its objects are reconciled once, but *which* instance serves it is incidental rather
+than designed.
 
 The warning is emitted at startup only, and reflects what peers are *running* rather than what their
 manifests declare, so it cannot see a peer that crashed before advertising.
-`achilles_shard_selector_overlap` carries the same signal as a gauge.
+`achilles_shard_overlap` carries the same signal as a gauge.
 
 ## What the Leases are called
 
-All of a controller's shard Leases are prefixed with a group derived from the **types it
-partitions** — a controller sharding `Application` uses `application-…`. Every shard of that
+All of a controller's shard Leases are prefixed with a group derived from the **GVKs it
+partitions** — a controller sharding `Application` uses `application-…`. Every instance of that
 controller must contend for the same value Leases, while an unrelated controller in the namespace
 must not, and "what is being partitioned" is exactly that scope. Nothing needs configuring.
 
@@ -144,32 +148,35 @@ must not, and "what is being partitioned" is exactly that scope. Nothing needs c
 | --- | --- |
 | `<group>-value-<value>` | Ownership of one concrete shard value |
 | `<group>-unlabeled` | Ownership of the objects carrying no shard label |
-| `<group>-instance-<instance>` | One instance's advertised selector |
-| `<instance>` | Leader election, one per shard |
+| `<group>-instance-<instance>` | One instance's advertised shard values |
+| `<instance>` | Leader election, one per instance |
 
-Values that are not valid object names (uppercase, underscores, overly long) are hashed. Shards also
-carry a short readable ID derived from their value set (`0-1`, `not-0-1`, `catchall`, `any`), which
-appears as a label and in logs but no longer names anything that must be unique.
+Values that are not valid object names (uppercase, underscores, overly long) are hashed. Instances
+also carry a short readable shard ID derived from their values (`0-1`, `catchall`), which appears as
+a label and in logs but does not name anything that must be unique.
 
 ## Adding, changing, or removing a shard
 
-An ordinary rolling update. Values move between shards as Leases are released and acquired, so there
-is no drain-then-deploy step and no window in which two instances reconcile the same object. Editing
-a shard's selector is also a rolling update: the incoming pod is the same instance as the outgoing
-one, so it holds the same leader election lock and reclaims its predecessor's values immediately.
+An ordinary rolling update. Editing an instance's `--shard-values` is also a rolling update: the
+incoming pod is the same instance as the outgoing one, so it holds the same leader election lock and
+reclaims its predecessor's values immediately.
 
-Removing a shard is the one case needing care: its values are released, and if no remaining selector
-claims them, their objects go unreconciled with nothing reporting an error. Always leave a catch-all
-running.
+Moving a value between two instances means editing both. Order does not matter for correctness — the
+value's Lease keeps it reconciled by at most one instance throughout — but removing it from its
+current owner first leaves it ignored until the other instance picks it up, while adding it to the
+new owner first leaves it briefly contested.
+
+Removing an instance is the case needing care: its values become ignored, and their objects go
+unreconciled. Reassign them to a remaining instance in the same change.
 
 ## Failure modes to alert on
 
 | Metric | Meaning |
 | --- | --- |
-| `achilles_shard_values_unowned` | A value in use whose Lease no instance holds. Its objects are reconciled by nobody. The one to page on. |
-| `achilles_shard_values_contested` | This instance claims a value another shard holds. Correct but unintended; the selectors overlap. |
-| `achilles_shard_selector_overlap` | Another instance advertises an overlapping selector. |
-| `achilles_shard_reconciles_skipped_total` | Reconciles skipped for lack of ownership, by reason. |
+| `achilles_shard_values_ignored` | A value in use and whether this instance ignores it. `min by (group, value) (...) == 1` means no instance manages it, so its objects are reconciled by nobody. The one to page on. |
+| `achilles_shard_values_contested` | This instance manages a value another instance holds. Correct but unintended; two instances were configured with it. |
+| `achilles_shard_overlap` | Another instance manages one of this instance's values. |
+| `achilles_shard_values_held` | How many values this instance holds. Zero on a leader means ownership is not being acquired. |
 
 Mutual exclusion is as strong as Kubernetes leader election and no stronger. Leases carry no fencing
 token, so a process stalled past its lease expiry can wake believing it still owns a value.
@@ -180,9 +187,10 @@ It distributes reconcile work and shrinks the blast radius of one instance. It d
 per-instance memory: every instance caches every object, because ownership is decided after the
 object is in hand rather than by filtering it out of the informer.
 
-The ownership sync scans the sharded types on every tick, so cost scales with the number of objects
-and with the **cardinality of the shard key** — one Lease per distinct value, each renewed every few
-seconds. A handful of values is free; thousands is not. Shard on something low-cardinality.
+The ownership sync scans the partitioned GVKs on every tick to report ignored values, so cost scales
+with the number of objects and with the **cardinality of the shard key** — one Lease per managed
+value, each renewed every few seconds, and one metric series per value in use. A handful of values
+is free; thousands is not. Shard on something low-cardinality.
 
 ## Changing an object's shard
 

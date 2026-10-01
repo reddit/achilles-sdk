@@ -3,6 +3,7 @@ package shard
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -21,8 +22,9 @@ const (
 	// the same shard.
 	IDLabelKey = "shard.infrared.reddit.com/id"
 
-	// SelectorAnnotationKey holds the advertised selector verbatim.
-	SelectorAnnotationKey = "shard.infrared.reddit.com/selector"
+	// ValuesAnnotationKey holds the concrete shard values the advertising instance manages, as a
+	// comma-separated list in canonical order.
+	ValuesAnnotationKey = "shard.infrared.reddit.com/values"
 )
 
 // DefaultLeaseDuration is how long an advertisement stays valid without renewal.
@@ -30,7 +32,7 @@ const DefaultLeaseDuration = 30 * time.Second
 
 // Config describes the advertisement this process publishes.
 type Config struct {
-	// Shard is the slice this process owns.
+	// Shard is the set of values this process manages.
 	Shard *Shard
 
 	// Group scopes this advertisement to the controller partitioning these types.
@@ -54,13 +56,13 @@ type Config struct {
 	Log *zap.SugaredLogger
 }
 
-// Advertiser publishes this process's shard selector and reports when a different shard advertises
-// an overlapping one.
+// Advertiser publishes the shard values this process manages and reports when another instance
+// manages one of them too.
 //
-// Overlap is no longer an error, because Owner arbitrates ownership over concrete values and so
-// keeps overlapping selectors from double-reconciling anything. It is still worth reporting: an
-// overlap means the deployments were given selectors that do not say what their author thought, and
-// the resulting assignment of values to shards is then arbitrary rather than designed.
+// Overlap is not an error, because Owner arbitrates ownership over each concrete value and so keeps
+// two instances from double-reconciling anything. It is still worth reporting: it means two
+// Deployments were configured with the same value, and which of them serves it is then arbitrary
+// rather than designed.
 //
 // It deliberately records what a process is *running* rather than what a manifest declares, so it
 // cannot be fooled by args arriving through an entrypoint wrapper, env expansion, or a ConfigMap.
@@ -85,7 +87,7 @@ func (a *Advertiser) LeaseName() string {
 	return instanceLeaseName(a.cfg.Group.Name, a.cfg.Instance)
 }
 
-// Advertise publishes this process's selector and warns when a peer's overlaps it.
+// Advertise publishes this process's shard values and warns when a peer manages any of them too.
 //
 // Runs before the manager starts, and therefore against an uncached client: the manager's client is
 // backed by a cache whose informers have not synced yet, and caching Leases cluster-wide would be
@@ -98,22 +100,22 @@ func (a *Advertiser) Advertise(ctx context.Context) error {
 
 	recordOverlap(a.cfg.Group.Name, a.cfg.Shard.ID(), overlap != "")
 	if overlap != "" && a.cfg.Log != nil {
-		a.cfg.Log.Warnw("shard selector overlaps another shard of this controller, "+
-			"so which shard serves the overlapping values is arbitrary", "overlap", overlap)
+		a.cfg.Log.Warnw("another instance of this controller manages one of this instance's shard "+
+			"values, so which of them serves it is arbitrary", "overlap", overlap)
 	}
 
 	return a.renew(ctx)
 }
 
-// Verify inspects live peers, returning a description of any selector overlap and an error for the
-// one misconfiguration that is not self-correcting.
+// Verify inspects live peers, returning a description of any overlap and an error for the one
+// misconfiguration that is not self-correcting.
 //
-// Overlapping selectors are merely unintended: Owner arbitrates over concrete values, so the
-// objects are still reconciled exactly once and only the assignment becomes arbitrary. Two
-// instances sharing a *name* is different in kind, because the name is the leader election lock:
-// they look to leader election like replicas of each other, so one wins, the other stands by
-// without ever starting a reconciler, and its shard's objects go unreconciled while its pod stays
-// healthy. Nothing downstream can recover from that, so it is fatal.
+// Overlap is merely unintended: Owner arbitrates over each concrete value, so the objects are still
+// reconciled exactly once and only the assignment becomes arbitrary. Two pods sharing an instance
+// name is different in kind, because the name is the leader election lock: they look to leader
+// election like replicas of each other, so pods that disagree about their shard values would have
+// one set of values served and the other silently never run. Nothing downstream can recover from
+// that, so a disagreement under one name is fatal.
 func (a *Advertiser) Verify(ctx context.Context) (string, error) {
 	var leases coordinationv1.LeaseList
 	if err := a.client.List(ctx, &leases,
@@ -130,7 +132,7 @@ func (a *Advertiser) Verify(ctx context.Context) (string, error) {
 			continue
 		}
 
-		raw := lease.Annotations[SelectorAnnotationKey]
+		raw := lease.Annotations[ValuesAnnotationKey]
 
 		// The group name drops the API group to stay readable, so two controllers partitioning
 		// same-named Kinds land in one group and would block each other's values.
@@ -143,34 +145,34 @@ func (a *Advertiser) Verify(ctx context.Context) (string, error) {
 			)
 		}
 
+		peer, err := Parse(a.cfg.Shard.Key(), strings.Split(raw, ","))
+		if err != nil || peer == nil {
+			// An unparseable advertisement is not evidence of a conflict, but it does mean some
+			// peer is misconfigured.
+			if a.cfg.Log != nil {
+				a.cfg.Log.Warnw("ignoring unparseable shard advertisement", "lease", lease.Name, "values", raw)
+			}
+			continue
+		}
+
 		if lease.Labels[InstanceLabelKey] == a.cfg.Instance {
 			// Replicas of our own instance are expected during a rolling update, but only if they
-			// really are our instance. A different selector under our name means two Deployments
-			// were given one name, and so one leader election lock.
-			if raw != a.cfg.Shard.String() {
+			// agree about their work. Disagreement under one name means two Deployments were given
+			// one name, and so one leader election lock.
+			if !a.cfg.Shard.Equal(peer) {
 				return "", fmt.Errorf(
-					"instance name %q is already advertising the different selector %q (held by %q): "+
-						"two instances sharing a name share a leader election lock, so one shard "+
-						"would never run; give each instance the name of its own Deployment",
+					"instance name %q is already advertising the different shard values %q (held by %q): "+
+						"pods sharing an instance name share a leader election lock, so only one set "+
+						"of values would ever be served; give each instance the name of its own Deployment",
 					a.cfg.Instance, raw, holder(lease),
 				)
 			}
 			continue
 		}
 
-		peer, err := Parse(a.cfg.Shard.Key(), raw)
-		if err != nil || peer == nil {
-			// An unparseable advertisement is not evidence of a conflict, but it does mean some
-			// peer is misconfigured.
-			if a.cfg.Log != nil {
-				a.cfg.Log.Warnw("ignoring unparseable shard advertisement", "lease", lease.Name, "selector", raw)
-			}
-			continue
-		}
-
 		if conflict := a.cfg.Shard.Conflict(peer); conflict != "" && overlap == "" {
 			overlap = fmt.Sprintf(
-				"selector %q overlaps instance %q (selector %q, held by %q) on %s",
+				"shard values %q overlap instance %q (values %q, held by %q) on %s",
 				a.cfg.Shard, lease.Labels[InstanceLabelKey], raw, holder(lease), conflict,
 			)
 		}
@@ -225,7 +227,7 @@ func (a *Advertiser) stamp(lease *coordinationv1.Lease, now metav1.MicroTime, se
 	if lease.Annotations == nil {
 		lease.Annotations = map[string]string{}
 	}
-	lease.Annotations[SelectorAnnotationKey] = a.cfg.Shard.String()
+	lease.Annotations[ValuesAnnotationKey] = a.cfg.Shard.String()
 	lease.Annotations[TypesAnnotationKey] = a.cfg.Group.Types
 
 	identity := a.cfg.Identity

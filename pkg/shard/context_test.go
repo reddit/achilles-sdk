@@ -8,32 +8,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSkipIsNoopWhenShardingIsDisabled(t *testing.T) {
-	skip, retry := Skip(context.Background(), obj("0", true))
-	assert.False(t, skip)
-	assert.False(t, retry)
+func TestCheckReportsOwnedWhenShardingIsDisabled(t *testing.T) {
+	assert.Equal(t, Owned, Check(context.Background(), obj("0", true)))
 }
 
-func TestSkipDistinguishesAnotherShardsWorkFromAnUnacquiredValue(t *testing.T) {
+func TestCheckDistinguishesAnotherShardsWorkFromAnUnacquiredValue(t *testing.T) {
 	c := testClient()
-	o := mustOwner(t, c, "inst-a", "pod-a", "shard.infrared.reddit.com/key in (0)", inventory(false, "0", "1"))
+	o := mustOwner(t, c, "inst-a", "pod-a", []string{"0"}, inventory(false, "0", "1"))
 	ctx := NewContext(context.Background(), o)
 
-	// Before the first sync nothing is held, so a selected value is worth revisiting.
-	skip, retry := Skip(ctx, obj("0", true))
-	assert.True(t, skip)
-	assert.True(t, retry, "the value is selected, so ownership is still pending")
+	// Before the first sync nothing is held, so a managed value is worth revisiting.
+	assert.Equal(t, Pending, Check(ctx, obj("0", true)))
 
-	// Another shard's slice will never become ours, so there is nothing to wait for.
-	skip, retry = Skip(ctx, obj("1", true))
-	assert.True(t, skip)
-	assert.False(t, retry)
+	// A value this instance was not configured with will not become ours without a configuration
+	// change, so there is nothing to wait for.
+	assert.Equal(t, NotManaged, Check(ctx, obj("1", true)))
 
 	require.NoError(t, o.Sync(ctx))
 
-	skip, retry = Skip(ctx, obj("0", true))
-	assert.False(t, skip)
-	assert.False(t, retry)
+	assert.Equal(t, Owned, Check(ctx, obj("0", true)))
 }
 
 func TestOwnerFromContextIsNilWhenAbsent(t *testing.T) {

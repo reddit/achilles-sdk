@@ -27,7 +27,7 @@ func testClient(objs ...client.Object) client.Client {
 }
 
 // peerLease builds the advertisement another controller instance would have published.
-func peerLease(instance, shardID, selector string, renewedAgo time.Duration) *coordinationv1.Lease {
+func peerLease(instance, shardID, values string, renewedAgo time.Duration) *coordinationv1.Lease {
 	renew := metav1.NewMicroTime(time.Now().Add(-renewedAgo))
 	holder := "peer-pod"
 	duration := int32(15)
@@ -43,8 +43,8 @@ func peerLease(instance, shardID, selector string, renewedAgo time.Duration) *co
 				KindLabelKey:     kindAdvertisement,
 			},
 			Annotations: map[string]string{
-				SelectorAnnotationKey: selector,
-				TypesAnnotationKey:    testGroupID.Types,
+				ValuesAnnotationKey: values,
+				TypesAnnotationKey:  testGroupID.Types,
 			},
 		},
 		Spec: coordinationv1.LeaseSpec{
@@ -55,8 +55,8 @@ func peerLease(instance, shardID, selector string, renewedAgo time.Duration) *co
 	}
 }
 
-func advertiser(c client.Client, instance, selector string) (*Advertiser, error) {
-	s, err := Parse(DefaultKey, selector)
+func advertiser(c client.Client, instance string, values []string) (*Advertiser, error) {
+	s, err := Parse(DefaultKey, values)
 	if err != nil {
 		return nil, err
 	}
@@ -69,50 +69,51 @@ func advertiser(c client.Client, instance, selector string) (*Advertiser, error)
 	}), nil
 }
 
-func mustAdvertiser(t *testing.T, c client.Client, instance, selector string) *Advertiser {
+func mustAdvertiser(t *testing.T, c client.Client, instance string, values []string) *Advertiser {
 	t.Helper()
-	a, err := advertiser(c, instance, selector)
+	a, err := advertiser(c, instance, values)
 	require.NoError(t, err)
 	return a
 }
 
 func TestAdvertiseSucceedsWithNoPeers(t *testing.T) {
 	c := testClient()
-	a := mustAdvertiser(t, c, "inst-a", "shard.infrared.reddit.com/key=a")
+	a := mustAdvertiser(t, c, "inst-a", []string{"a"})
 
 	require.NoError(t, a.Advertise(context.Background()))
 
 	var lease coordinationv1.Lease
 	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: a.LeaseName()}, &lease))
-	assert.Equal(t, "shard.infrared.reddit.com/key=a", lease.Annotations[SelectorAnnotationKey])
+	assert.Equal(t, "a", lease.Annotations[ValuesAnnotationKey])
 	assert.Equal(t, "inst-a", lease.Labels[InstanceLabelKey])
 	assert.Equal(t, "self-pod", *lease.Spec.HolderIdentity)
 }
 
-// Overlap is reported but not refused: Owner arbitrates over concrete values, so the objects are
-// still reconciled exactly once.
+// Overlap is reported but not refused: Owner arbitrates over each concrete value, so the objects
+// are still reconciled exactly once.
 func TestVerifyReportsAnOverlappingPeerWithoutFailing(t *testing.T) {
-	c := testClient(peerLease("inst-b", "a-b", "shard.infrared.reddit.com/key in (a,b)", time.Second))
-	a := mustAdvertiser(t, c, "inst-a", "shard.infrared.reddit.com/key=a")
+	c := testClient(peerLease("inst-b", "a-b", "a,b", time.Second))
+	a := mustAdvertiser(t, c, "inst-a", []string{"a"})
 
 	overlap, err := a.Verify(context.Background())
 	require.NoError(t, err)
-	assert.Contains(t, overlap, "overlaps")
+	assert.Contains(t, overlap, "overlap")
 }
 
 func TestVerifyIgnoresDisjointPeer(t *testing.T) {
-	c := testClient(peerLease("inst-b", "b", "shard.infrared.reddit.com/key=b", time.Second))
-	a := mustAdvertiser(t, c, "inst-a", "shard.infrared.reddit.com/key=a")
+	c := testClient(peerLease("inst-b", "b", "b", time.Second))
+	a := mustAdvertiser(t, c, "inst-a", []string{"a"})
 
 	overlap, err := a.Verify(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, overlap)
 }
 
-// A rolling update runs two pods of the same instance at once, which must not look like a conflict.
+// A rolling update runs two pods of the same instance at once, which must not look like a conflict
+// so long as they agree about their work.
 func TestAdvertiseAllowsAnotherReplicaOfTheSameInstance(t *testing.T) {
-	c := testClient(peerLease("inst-a", "a", "shard.infrared.reddit.com/key=a", time.Second))
-	a := mustAdvertiser(t, c, "inst-a", "shard.infrared.reddit.com/key=a")
+	c := testClient(peerLease("inst-a", "a", "a", time.Second))
+	a := mustAdvertiser(t, c, "inst-a", []string{"a"})
 
 	require.NoError(t, a.Advertise(context.Background()))
 
@@ -121,11 +122,21 @@ func TestAdvertiseAllowsAnotherReplicaOfTheSameInstance(t *testing.T) {
 	assert.Equal(t, "self-pod", *lease.Spec.HolderIdentity, "the incoming pod takes over the instance's lease")
 }
 
+// Values given in a different order are the same configuration, so a restart with a reordered flag
+// must not look like a disagreement.
+func TestVerifyTreatsReorderedValuesAsAgreement(t *testing.T) {
+	c := testClient(peerLease("inst-a", "0-1", "1,0", time.Second))
+	a := mustAdvertiser(t, c, "inst-a", []string{"0", "1"})
+
+	_, err := a.Verify(context.Background())
+	assert.NoError(t, err)
+}
+
 // The one misconfiguration that is not self-correcting: two Deployments given one name share a
-// leader election lock, so one of them never starts a reconciler.
-func TestVerifyFailsWhenAnotherInstanceSharesOurName(t *testing.T) {
-	c := testClient(peerLease("inst-a", "b", "shard.infrared.reddit.com/key=b", time.Second))
-	a := mustAdvertiser(t, c, "inst-a", "shard.infrared.reddit.com/key=a")
+// leader election lock, so only one of their value sets would ever be served.
+func TestVerifyFailsWhenPodsSharingOurNameDisagreeAboutTheirValues(t *testing.T) {
+	c := testClient(peerLease("inst-a", "b", "b", time.Second))
+	a := mustAdvertiser(t, c, "inst-a", []string{"a"})
 
 	_, err := a.Verify(context.Background())
 	require.Error(t, err)
@@ -137,19 +148,19 @@ func TestVerifyFailsWhenAnotherInstanceSharesOurName(t *testing.T) {
 // The readable group name drops the API group, so two controllers sharding same-named Kinds would
 // otherwise contend for each other's values.
 func TestVerifyFailsWhenAnotherControllerSharesOurGroupName(t *testing.T) {
-	peer := peerLease("inst-b", "b", "shard.infrared.reddit.com/key=b", time.Second)
+	peer := peerLease("inst-b", "b", "b", time.Second)
 	peer.Annotations[TypesAnnotationKey] = "other.example.com/v1,TestKind"
 	c := testClient(peer)
 
-	a := mustAdvertiser(t, c, "inst-a", "shard.infrared.reddit.com/key=a")
+	a := mustAdvertiser(t, c, "inst-a", []string{"a"})
 
 	_, err := a.Verify(context.Background())
 	assert.ErrorContains(t, err, "different types")
 }
 
 func TestVerifyIgnoresStalePeer(t *testing.T) {
-	c := testClient(peerLease("inst-b", "a-b", "shard.infrared.reddit.com/key in (a,b)", time.Hour))
-	a := mustAdvertiser(t, c, "inst-a", "shard.infrared.reddit.com/key=a")
+	c := testClient(peerLease("inst-b", "a-b", "a,b", time.Hour))
+	a := mustAdvertiser(t, c, "inst-a", []string{"a"})
 
 	overlap, err := a.Verify(context.Background())
 	require.NoError(t, err)
@@ -157,11 +168,11 @@ func TestVerifyIgnoresStalePeer(t *testing.T) {
 }
 
 func TestVerifyIgnoresOtherGroups(t *testing.T) {
-	other := peerLease("inst-b", "a-b", "shard.infrared.reddit.com/key in (a,b)", time.Second)
+	other := peerLease("inst-b", "a-b", "a,b", time.Second)
 	other.Labels[GroupLabelKey] = "a-different-controller"
 	c := testClient(other)
 
-	a := mustAdvertiser(t, c, "inst-a", "shard.infrared.reddit.com/key=a")
+	a := mustAdvertiser(t, c, "inst-a", []string{"a"})
 
 	overlap, err := a.Verify(context.Background())
 	require.NoError(t, err)
@@ -170,7 +181,7 @@ func TestVerifyIgnoresOtherGroups(t *testing.T) {
 
 func TestRenewUpdatesRenewTime(t *testing.T) {
 	c := testClient()
-	a := mustAdvertiser(t, c, "inst-a", "shard.infrared.reddit.com/key=a")
+	a := mustAdvertiser(t, c, "inst-a", []string{"a"})
 	require.NoError(t, a.Advertise(context.Background()))
 
 	var before coordinationv1.Lease
@@ -186,16 +197,16 @@ func TestRenewUpdatesRenewTime(t *testing.T) {
 }
 
 func TestLeaseNameIsScopedToGroupAndInstance(t *testing.T) {
-	a := mustAdvertiser(t, testClient(), "app-controller-critical", "shard.infrared.reddit.com/key in (0,1)")
+	a := mustAdvertiser(t, testClient(), "app-controller-critical", []string{"0", "1"})
 	assert.Equal(t, testGroup+"-instance-app-controller-critical", a.LeaseName())
 
-	b := mustAdvertiser(t, testClient(), "app-controller-standard", "!shard.infrared.reddit.com/key")
+	b := mustAdvertiser(t, testClient(), "app-controller-standard", []string{UnlabeledValue})
 	assert.Equal(t, testGroup+"-instance-app-controller-standard", b.LeaseName())
 }
 
-// Every replica advertises, not just the leader, so the published selector map reflects what is
-// actually running.
+// Every replica advertises, not just the leader, so the published map of who manages what reflects
+// what is actually running.
 func TestAdvertiserIsNotLeaderGated(t *testing.T) {
-	a := mustAdvertiser(t, testClient(), "inst-a", "shard.infrared.reddit.com/key=a")
+	a := mustAdvertiser(t, testClient(), "inst-a", []string{"a"})
 	assert.False(t, a.NeedLeaderElection())
 }

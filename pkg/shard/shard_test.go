@@ -1,62 +1,89 @@
 package shard
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/labels"
 )
 
-func TestParseRejectsForeignKeys(t *testing.T) {
-	for _, raw := range []string{
-		"other.example.com/key=a",
-		"shard.infrared.reddit.com/key=a,env=prod",
-		"env=prod",
-	} {
-		_, err := Parse(DefaultKey, raw)
-		assert.ErrorContains(t, err, DefaultKey, "selector %q referencing a foreign key must be rejected", raw)
-	}
-}
-
-func TestParseRejectsMalformed(t *testing.T) {
-	_, err := Parse(DefaultKey, "!!!")
-	assert.Error(t, err)
+func mustParse(t *testing.T, values ...string) *Shard {
+	t.Helper()
+	s, err := Parse(DefaultKey, values)
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	return s
 }
 
 func TestParseEmptyYieldsNoShard(t *testing.T) {
-	s, err := Parse(DefaultKey, "")
-	require.NoError(t, err)
-	assert.Nil(t, s, "an empty selector means sharding is disabled")
+	for name, values := range map[string][]string{
+		"nil":          nil,
+		"empty slice":  {},
+		"blank string": {""},
+		"whitespace":   {"  "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, err := Parse(DefaultKey, values)
+			require.NoError(t, err)
+			assert.Nil(t, s, "no values means sharding is disabled")
+		})
+	}
 }
 
-func TestParseRejectsUnsatisfiableSelector(t *testing.T) {
-	// Matches nothing at all, so the controller would silently reconcile no objects.
-	_, err := Parse(DefaultKey, "shard.infrared.reddit.com/key=a,shard.infrared.reddit.com/key=b")
-	assert.ErrorContains(t, err, "matches no objects")
+// A value that cannot appear in a label could never match an object, so it is a typo rather than an
+// empty shard.
+func TestParseRejectsValuesNoObjectCouldCarry(t *testing.T) {
+	for _, value := range []string{"a/b", "-leading", strings.Repeat("x", 64), "has space"} {
+		_, err := Parse(DefaultKey, []string{value})
+		assert.ErrorContains(t, err, "not a valid label value", "value %q must be rejected", value)
+	}
+}
+
+func TestParseNormalizesValues(t *testing.T) {
+	s := mustParse(t, " 1 ", "0", "1", "")
+
+	assert.Equal(t, []string{"0", "1"}, s.Values(), "values are trimmed, deduplicated, and ordered")
+	assert.Equal(t, "0,1", s.String())
+}
+
+func TestParseAcceptsTheUnlabeledSentinel(t *testing.T) {
+	s := mustParse(t, "0", UnlabeledValue)
+
+	assert.True(t, s.OwnsUnlabeled())
+	assert.True(t, s.Owns("0"))
+	assert.Equal(t, []string{"0", UnlabeledValue}, s.Values())
+}
+
+func TestOwns(t *testing.T) {
+	s := mustParse(t, "0", "1")
+
+	assert.True(t, s.Owns("0"))
+	assert.False(t, s.Owns("2"), "a value this instance was not given is not its work")
+	assert.False(t, s.OwnsUnlabeled(), "the unlabeled partition must be claimed explicitly")
 }
 
 func TestID(t *testing.T) {
 	tests := map[string]struct {
-		raw  string
-		want string
+		values []string
+		want   string
 	}{
-		"single value is used verbatim": {"shard.infrared.reddit.com/key=shard1", "shard1"},
-		"single value via in":           {"shard.infrared.reddit.com/key in (shard1)", "shard1"},
-		"catch-all":                     {"!shard.infrared.reddit.com/key", "catchall"},
-		"value set is spelled out":      {"shard.infrared.reddit.com/key in (a,b)", "a-b"},
-		"tier split":                    {"shard.infrared.reddit.com/key in (0,1)", "0-1"},
-		"negation is spelled out":       {"shard.infrared.reddit.com/key notin (0,1)", "not-0-1"},
-		"exists":                        {"shard.infrared.reddit.com/key", "any"},
-		"non-dns-safe value is hashed":  {"shard.infrared.reddit.com/key=Shard_1", "h"},
-		"long value set is hashed":      {"shard.infrared.reddit.com/key in (aaaaaaaaaa,bbbbbbbbbb,cccccccccc,dddddddddd,eeeeeeeeee)", "h"},
+		"single value is used verbatim": {[]string{"shard1"}, "shard1"},
+		"value set is spelled out":      {[]string{"a", "b"}, "a-b"},
+		"tier split":                    {[]string{"0", "1"}, "0-1"},
+		"catch-all":                     {[]string{UnlabeledValue}, "catchall"},
+		"catch-all alongside values":    {[]string{"0", UnlabeledValue}, "0-catchall"},
+		"non-dns-safe value is hashed":  {[]string{"Shard_1"}, "h"},
+		"long value set is hashed": {
+			[]string{"aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd", "eeeeeeeeee"}, "h",
+		},
+		// Rendering the sentinel as "catchall" would otherwise make these two shards share an ID.
+		"literal catchall beside the sentinel is hashed": {[]string{"catchall", UnlabeledValue}, "h"},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			s, err := Parse(DefaultKey, tc.raw)
-			require.NoError(t, err)
-			got := s.ID()
+			got := mustParse(t, tc.values...).ID()
 
 			if tc.want == "h" {
 				assert.Regexp(t, `^h[0-9a-f]{10}$`, got)
@@ -67,56 +94,55 @@ func TestID(t *testing.T) {
 	}
 }
 
-func TestIDIsStableAndOrderIndependent(t *testing.T) {
-	a, err := Parse(DefaultKey, "shard.infrared.reddit.com/key in (a,b)")
-	require.NoError(t, err)
-	b, err := Parse(DefaultKey, "shard.infrared.reddit.com/key in (b,a)")
-	require.NoError(t, err)
+func TestIDIsOrderIndependent(t *testing.T) {
+	assert.Equal(t, mustParse(t, "a", "b").ID(), mustParse(t, "b", "a").ID(),
+		"the same values in a different order are the same shard")
+}
 
-	assert.Equal(t, a.ID(), b.ID(), "equivalent selectors must produce the same ID regardless of value order")
+func TestIDDistinguishesTheSentinelFromALiteralValue(t *testing.T) {
+	assert.NotEqual(t, mustParse(t, "catchall").ID(), mustParse(t, UnlabeledValue).ID())
 }
 
 func TestIDIsDNSSafe(t *testing.T) {
-	for _, raw := range []string{
-		"shard.infrared.reddit.com/key=shard1",
-		"!shard.infrared.reddit.com/key",
-		"shard.infrared.reddit.com/key in (a,b)",
-		"shard.infrared.reddit.com/key notin (0,1)",
-		"shard.infrared.reddit.com/key",
-		"shard.infrared.reddit.com/key=Shard_1",
+	for _, values := range [][]string{
+		{"shard1"},
+		{UnlabeledValue},
+		{"a", "b"},
+		{"Shard_1"},
+		{"catchall", UnlabeledValue},
+		{strings.Repeat("x", 63)},
 	} {
-		s, err := Parse(DefaultKey, raw)
-		require.NoError(t, err)
-		assert.Regexp(t, `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, s.ID(), "ID for %q must be usable in a resource name", raw)
+		assert.Regexp(t, `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, mustParse(t, values...).ID(),
+			"ID for %q must be usable in a resource name", values)
 	}
+}
+
+func TestEqual(t *testing.T) {
+	assert.True(t, mustParse(t, "0", "1").Equal(mustParse(t, "1", "0")))
+	assert.False(t, mustParse(t, "0", "1").Equal(mustParse(t, "0")))
+	assert.False(t, mustParse(t, "0").Equal(mustParse(t, "0", UnlabeledValue)),
+		"the unlabeled partition is work like any other")
+	assert.False(t, mustParse(t, "0").Equal(nil))
 }
 
 func TestOverlaps(t *testing.T) {
 	tests := map[string]struct {
-		a, b string
+		a, b []string
 		want bool
 	}{
-		"identical single values":        {"shard.infrared.reddit.com/key=a", "shard.infrared.reddit.com/key=a", true},
-		"disjoint single values":         {"shard.infrared.reddit.com/key=a", "shard.infrared.reddit.com/key=b", false},
-		"overlapping value sets":         {"shard.infrared.reddit.com/key in (a,b)", "shard.infrared.reddit.com/key in (b,c)", true},
-		"disjoint value sets":            {"shard.infrared.reddit.com/key in (a,b)", "shard.infrared.reddit.com/key in (c,d)", false},
-		"catch-all vs labeled shard":     {"!shard.infrared.reddit.com/key", "shard.infrared.reddit.com/key=a", false},
-		"catch-all vs catch-all":         {"!shard.infrared.reddit.com/key", "!shard.infrared.reddit.com/key", true},
-		"catch-all vs exists":            {"!shard.infrared.reddit.com/key", "shard.infrared.reddit.com/key", false},
-		"exists vs single value":         {"shard.infrared.reddit.com/key", "shard.infrared.reddit.com/key=a", true},
-		"notin excludes that value":      {"shard.infrared.reddit.com/key notin (a)", "shard.infrared.reddit.com/key=a", false},
-		"notin admits other values":      {"shard.infrared.reddit.com/key notin (a)", "shard.infrared.reddit.com/key=b", true},
-		"notin matches unlabeled too":    {"shard.infrared.reddit.com/key notin (a)", "!shard.infrared.reddit.com/key", true},
-		"two negations always overlap":   {"shard.infrared.reddit.com/key notin (a)", "shard.infrared.reddit.com/key notin (b)", true},
-		"compound narrowing is disjoint": {"shard.infrared.reddit.com/key in (a,b),shard.infrared.reddit.com/key notin (b)", "shard.infrared.reddit.com/key=b", false},
+		"identical":               {[]string{"a"}, []string{"a"}, true},
+		"disjoint":                {[]string{"a"}, []string{"b"}, false},
+		"partial":                 {[]string{"a", "b"}, []string{"b", "c"}, true},
+		"disjoint sets":           {[]string{"a", "b"}, []string{"c", "d"}, false},
+		"catch-all vs value":      {[]string{UnlabeledValue}, []string{"a"}, false},
+		"catch-all vs catch-all":  {[]string{UnlabeledValue}, []string{UnlabeledValue}, true},
+		"catch-all vs mixed":      {[]string{UnlabeledValue}, []string{"a", UnlabeledValue}, true},
+		"the intended tier split": {[]string{"0", "1"}, []string{"2", "3"}, false},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			a, err := Parse(DefaultKey, tc.a)
-			require.NoError(t, err)
-			b, err := Parse(DefaultKey, tc.b)
-			require.NoError(t, err)
+			a, b := mustParse(t, tc.a...), mustParse(t, tc.b...)
 
 			assert.Equal(t, tc.want, a.Overlaps(b))
 			assert.Equal(t, tc.want, b.Overlaps(a), "overlap must be symmetric")
@@ -126,74 +152,33 @@ func TestOverlaps(t *testing.T) {
 
 func TestConflict(t *testing.T) {
 	tests := map[string]struct {
-		a, b string
+		a, b []string
 		want string
 	}{
-		// Looks like a clean split of the values in use, but both shards own every unlabelled
-		// object and every value neither excludes. Only one shard may be negated.
-		"two negated shards": {
-			"shard.infrared.reddit.com/key notin (0,1)",
-			"shard.infrared.reddit.com/key notin (2,3)",
-			"objects carrying no shard label and every shard value except 0, 1, 2, 3",
-		},
 		"shared value": {
-			"shard.infrared.reddit.com/key in (a,b)",
-			"shard.infrared.reddit.com/key in (b,c)",
-			"the shard value(s) b",
+			[]string{"a", "b"}, []string{"b", "c"}, "the shard value(s) b",
 		},
-		"negated shard absorbs a named one": {
-			"shard.infrared.reddit.com/key notin (0,1)",
-			"shard.infrared.reddit.com/key=2",
-			"the shard value(s) 2",
+		"several shared values": {
+			[]string{"0", "1", "2"}, []string{"1", "2", "3"}, "the shard value(s) 1, 2",
 		},
-		"catch-all against a named shard": {
-			"!shard.infrared.reddit.com/key",
-			"shard.infrared.reddit.com/key=a",
-			"",
+		"shared catch-all": {
+			[]string{UnlabeledValue}, []string{UnlabeledValue}, "objects carrying no shard label",
 		},
-		"the intended pairing is disjoint": {
-			"shard.infrared.reddit.com/key in (0,1)",
-			"shard.infrared.reddit.com/key notin (0,1)",
-			"",
+		"shared catch-all and value": {
+			[]string{"0", UnlabeledValue}, []string{"0", UnlabeledValue},
+			"objects carrying no shard label and the shard value(s) 0",
+		},
+		"disjoint": {
+			[]string{"0", "1"}, []string{"2", "3"}, "",
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			a, err := Parse(DefaultKey, tc.a)
-			require.NoError(t, err)
-			b, err := Parse(DefaultKey, tc.b)
-			require.NoError(t, err)
+			a, b := mustParse(t, tc.a...), mustParse(t, tc.b...)
 
 			assert.Equal(t, tc.want, a.Conflict(b))
 			assert.Equal(t, tc.want, b.Conflict(a), "the description must not depend on argument order")
-		})
-	}
-}
-
-func TestSelectorMatchesExpectedObjects(t *testing.T) {
-	tests := map[string]struct {
-		raw    string
-		labels map[string]string
-		want   bool
-	}{
-		"equality matches":             {"shard.infrared.reddit.com/key=a", map[string]string{DefaultKey: "a"}, true},
-		"equality rejects other value": {"shard.infrared.reddit.com/key=a", map[string]string{DefaultKey: "b"}, false},
-		"equality rejects unlabeled":   {"shard.infrared.reddit.com/key=a", nil, false},
-		"catch-all matches unlabeled":  {"!shard.infrared.reddit.com/key", nil, true},
-		"catch-all rejects labeled":    {"!shard.infrared.reddit.com/key", map[string]string{DefaultKey: "a"}, false},
-		// The semantics that make a single-selector catch-all possible at all.
-		"notin matches unlabeled": {"shard.infrared.reddit.com/key notin (a)", nil, true},
-		// A negated shard absorbs shard values that did not exist when it was deployed, so a new
-		// value never lands with nobody until it is deliberately carved out.
-		"notin absorbs an unforeseen value": {"shard.infrared.reddit.com/key notin (0,1)", map[string]string{DefaultKey: "2"}, true},
-	}
-
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			s, err := Parse(DefaultKey, tc.raw)
-			require.NoError(t, err)
-			assert.Equal(t, tc.want, s.Selector().Matches(labels.Set(tc.labels)))
 		})
 	}
 }

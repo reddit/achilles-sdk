@@ -29,24 +29,14 @@ func OwnerFromContext(ctx context.Context) *Owner {
 	return o
 }
 
-// Skip reports whether the object belongs to another instance, and whether it is worth revisiting.
+// Check reports whether this instance may reconcile the object.
 //
-// Returns skip=false when sharding is disabled, so an unsharded controller pays one type assertion
-// per reconcile and nothing more.
-func Skip(ctx context.Context, obj client.Object) (skip, retry bool) {
+// Returns Owned when sharding is disabled, so an unsharded controller pays one type assertion per
+// reconcile and nothing more.
+func Check(ctx context.Context, obj client.Object) Ownership {
 	o := OwnerFromContext(ctx)
 	if o == nil {
-		return false, false
+		return Owned
 	}
-
-	switch o.Ownership(obj) {
-	case Owned:
-		return false, false
-	case NotSelected:
-		recordSkip(o.cfg.Group.Name, o.cfg.Shard.ID(), "not-selected")
-		return true, false
-	default:
-		recordSkip(o.cfg.Group.Name, o.cfg.Shard.ID(), "lease-not-held")
-		return true, true
-	}
+	return o.Ownership(obj)
 }
