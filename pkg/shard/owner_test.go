@@ -10,10 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const testNamespace = "ns"
@@ -77,6 +79,36 @@ func getLease(t *testing.T, c client.Client, value string) *coordinationv1.Lease
 	return &lease
 }
 
+// ageObservation backdates when this process saw a value's Lease, which is what expiry is measured
+// from. Reaching into the Owner avoids a test that has to sleep out a lease duration.
+func ageObservation(t *testing.T, o *Owner, value string, by time.Duration) {
+	t.Helper()
+
+	obs, ok := o.observed[value]
+	require.True(t, ok, "value %q has not been observed yet", value)
+	obs.at = obs.at.Add(-by)
+	o.observed[value] = obs
+}
+
+// ageClaim backdates when this process last confirmed its own claim on a value.
+func ageClaim(t *testing.T, o *Owner, value string, by time.Duration) {
+	t.Helper()
+
+	confirmed, ok := o.confirmed[value]
+	require.True(t, ok, "value %q has not been claimed yet", value)
+	o.confirmed[value] = confirmed.Add(-by)
+}
+
+// renewLease renews a Lease the way its holder would, so that watchers see the claim as live.
+func renewLease(t *testing.T, c client.Client, value string) {
+	t.Helper()
+
+	lease := getLease(t, c, value)
+	now := metav1.NewMicroTime(time.Now())
+	lease.Spec.RenewTime = &now
+	require.NoError(t, c.Update(context.Background(), lease))
+}
+
 func ignoredMetric(t *testing.T, instance, value string) float64 {
 	t.Helper()
 	return testutil.ToFloat64(valuesIgnored.WithLabelValues(instance, value))
@@ -130,7 +162,10 @@ func TestValueHeldByAnotherInstanceIsPending(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(valuesContested.WithLabelValues("inst-a")))
 }
 
-func TestExpiredLeaseIsClaimed(t *testing.T) {
+// Expiry is measured from when this process saw the Lease, never from the holder's own timestamp,
+// so a holder with a skewed clock cannot have its live claim mistaken for an abandoned one. The
+// cost is that a first sighting tells us nothing, however stale the timestamp looks.
+func TestAnotherInstancesLeaseIsNotClaimedOnFirstSighting(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithObjects(heldLease("0", "inst-b", "pod-b", time.Hour)).
 		Build()
@@ -138,7 +173,126 @@ func TestExpiredLeaseIsClaimed(t *testing.T) {
 
 	require.NoError(t, o.Sync(context.Background()))
 
+	assert.Equal(t, Pending, o.Ownership(labeled("0")))
+	assert.Equal(t, "pod-b", heldBy(getLease(t, c, "0")))
+}
+
+func TestAnotherInstancesLeaseIsClaimedOnceItAgesOut(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithObjects(heldLease("0", "inst-b", "pod-b", time.Hour)).
+		Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0"}, nil)
+	require.NoError(t, o.Sync(context.Background()))
+	require.Equal(t, Pending, o.Ownership(labeled("0")))
+
+	ageObservation(t, o, "0", 2*DefaultLeaseDuration)
+	require.NoError(t, o.Sync(context.Background()))
+
 	assert.Equal(t, Owned, o.Ownership(labeled("0")))
+	assert.Equal(t, "pod-a", heldBy(getLease(t, c, "0")))
+}
+
+// A holder that keeps renewing resets the clock on every sync, so it never ages out however long
+// this instance watches it.
+func TestARenewingHolderNeverAgesOut(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithObjects(heldLease("0", "inst-b", "pod-b", time.Second)).
+		Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0"}, nil)
+	require.NoError(t, o.Sync(context.Background()))
+
+	ageObservation(t, o, "0", 2*DefaultLeaseDuration)
+	renewLease(t, c, "0")
+	require.NoError(t, o.Sync(context.Background()))
+
+	assert.Equal(t, Pending, o.Ownership(labeled("0")))
+	assert.Equal(t, "pod-b", heldBy(getLease(t, c, "0")))
+}
+
+// A Lease nobody has ever renewed is claimable at once: there is no claim to have aged out.
+func TestNeverRenewedLeaseIsClaimedImmediately(t *testing.T) {
+	stale := heldLease("0", "inst-b", "pod-b", time.Second)
+	stale.Spec.RenewTime = nil
+	c := fake.NewClientBuilder().WithObjects(stale).Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0"}, nil)
+
+	require.NoError(t, o.Sync(context.Background()))
+
+	assert.Equal(t, Owned, o.Ownership(labeled("0")))
+}
+
+// A failed claim must not stop the others being attempted, or one unreachable value would mask the
+// state of every value after it.
+func TestSyncClaimsEveryValueDespiteFailures(t *testing.T) {
+	var attempted []string
+	c := fake.NewClientBuilder().
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				attempted = append(attempted, key.Name)
+				if key.Name == leaseName("0") {
+					return apierrors.NewServiceUnavailable("nope")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0", "1"}, nil)
+
+	err := o.Sync(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "0", "the failure must name the value it belongs to")
+	assert.Contains(t, attempted, leaseName("1"), "a later value must still be attempted")
+	assert.Equal(t, Owned, o.Ownership(labeled("1")))
+	assert.Equal(t, Pending, o.Ownership(labeled("0")))
+}
+
+// A transient failure is not evidence that the claim is gone, so work continues while the last
+// confirmed claim could still be live.
+func TestTransientFailureKeepsARecentlyConfirmedClaim(t *testing.T) {
+	fail := false
+	c := fake.NewClientBuilder().
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if fail {
+					return apierrors.NewServiceUnavailable("nope")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0"}, nil)
+	require.NoError(t, o.Sync(context.Background()))
+	require.Equal(t, Owned, o.Ownership(labeled("0")))
+
+	fail = true
+	require.Error(t, o.Sync(context.Background()))
+
+	assert.Equal(t, Owned, o.Ownership(labeled("0")))
+}
+
+// Once the claim is old enough that another instance could have taken it, continuing to act on it
+// would be exactly the double reconcile the Lease exists to prevent.
+func TestPersistentFailureGivesUpTheClaimAtExpiry(t *testing.T) {
+	fail := false
+	c := fake.NewClientBuilder().
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if fail {
+					return apierrors.NewServiceUnavailable("nope")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0"}, nil)
+	require.NoError(t, o.Sync(context.Background()))
+
+	fail = true
+	ageClaim(t, o, "0", 2*DefaultLeaseDuration)
+	require.Error(t, o.Sync(context.Background()))
+
+	assert.Equal(t, Pending, o.Ownership(labeled("0")))
 }
 
 // Leader election admits one leader per instance, so an unexpired Lease bearing our own instance
@@ -191,9 +345,8 @@ func TestValueTakenByAnotherInstanceStopsBeingOwned(t *testing.T) {
 	assert.Equal(t, Owned, o.Ownership(labeled("1")), "values still held must survive the loss of another")
 }
 
-// A value lost to another instance is reclaimed once that holder stops renewing, without this
-// instance being restarted.
-func TestValueRegainedOnceTheOtherHoldersLeaseExpires(t *testing.T) {
+// Contention has to clear once the value is regained, not merely be recorded when it starts.
+func TestContentionClearsWhenAValueIsRegained(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithObjects(heldLease("0", "regain-b", "pod-b", time.Second)).
 		Build()
@@ -204,15 +357,10 @@ func TestValueRegainedOnceTheOtherHoldersLeaseExpires(t *testing.T) {
 	require.Equal(t, 1.0, testutil.ToFloat64(valuesContested.WithLabelValues("regain-a")))
 	require.Equal(t, 0.0, testutil.ToFloat64(valuesHeld.WithLabelValues("regain-a")))
 
-	stale := getLease(t, c, "0")
-	renewed := metav1.NewMicroTime(time.Now().Add(-time.Hour))
-	stale.Spec.RenewTime = &renewed
-	require.NoError(t, c.Update(context.Background(), stale))
-
+	ageObservation(t, o, "0", 2*DefaultLeaseDuration)
 	require.NoError(t, o.Sync(context.Background()))
 
-	assert.Equal(t, Owned, o.Ownership(labeled("0")))
-	assert.Equal(t, "pod-a", heldBy(getLease(t, c, "0")))
+	require.Equal(t, Owned, o.Ownership(labeled("0")))
 	assert.Equal(t, 0.0, testutil.ToFloat64(valuesContested.WithLabelValues("regain-a")), "contention must clear, not just be recorded")
 	assert.Equal(t, 1.0, testutil.ToFloat64(valuesHeld.WithLabelValues("regain-a")))
 }
@@ -313,6 +461,19 @@ func TestStartReleasesOnShutdown(t *testing.T) {
 	require.NoError(t, <-stopped)
 
 	assert.Empty(t, heldBy(getLease(t, c, "0")))
+}
+
+// A sync loop that stops running refreshes nothing, so claimIsFresh never gets the chance to give
+// a value up. Ownership has to lapse on its own rather than persist on a stale view.
+func TestOwnershipLapsesWhenTheSyncLoopStops(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0"}, nil)
+	require.NoError(t, o.Sync(context.Background()))
+	require.Equal(t, Owned, o.Ownership(labeled("0")))
+
+	o.syncedAt.Store(time.Now().Add(-2 * DefaultLeaseDuration).UnixNano())
+
+	assert.Equal(t, Pending, o.Ownership(labeled("0")))
 }
 
 // A standby replica must not hold values it will not act on.

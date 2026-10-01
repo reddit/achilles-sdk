@@ -61,7 +61,10 @@ manages.
             name: application-controller-workload-critical
     ```
 
-    Then the wrong pod is never called at all. Four things to know before relying on it:
+    Webhook servers are not leader-gated, so every replica of every instance serves webhook traffic
+    and in-process filtering is not an option — the API server calls one endpoint and the Service
+    load-balances, so a request for any shard can land on any pod. Routing has to happen at the API
+    server, which is what `objectSelector` does. Four things to know before relying on it:
    - **`objectSelector` matches if either the new or the old object matches.** The API server evaluates
      `matchObject(attr.GetObject(), selector) || matchObject(attr.GetOldObject(), selector)`
      ([`predicates/object/matcher.go`](https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/apiserver/pkg/admission/plugin/webhook/predicates/object/matcher.go#L60)).
@@ -95,8 +98,15 @@ instance, which would be unsafe if two Deployments could share an instance name 
 because the instance name is the name of the pod's own workload, read from its owner chain rather
 than configured. Two workloads in a namespace cannot share a name.
 
-Exclusion is as strong as Kubernetes leader election and no stronger. A Lease carries no fencing
-token, so a process stalled past its lease expiry can wake up still believing it holds a value.
+A Lease carries no fencing token, so exclusion depends on an instance giving a value up on its own.
+Two bounds make it do that. An instance that cannot renew a claim keeps acting on the value only
+until the claim could have expired, and an instance whose sync loop stops running altogether stops
+acting on every value after one lease duration. Both are measured from this process's own clock, so
+neither depends on the failing instance noticing anything.
+
+Expiry is judged the same way: from when *this* process saw a Lease, never from the holder's own
+`renewTime`. A holder with a skewed clock therefore cannot have its live claim mistaken for an
+abandoned one. The cost is that a first sighting proves nothing — see below.
 
 ### What it does and does not buy
 
@@ -183,7 +193,14 @@ expiry.
 
 Moving a value between instances is safe in either order. If the losing instance goes first, the
 value is briefly unclaimed and its objects are not reconciled. If the gaining instance goes first,
-it is briefly contested and defers. Neither window exceeds the lease duration.
+it is briefly contested and defers.
+
+How long the gaining instance waits depends on how the value was given up. A value released on
+termination, or one whose Lease still bears the gaining instance's own name, is taken immediately.
+A value simply abandoned — the holder was killed outright — takes **a full lease duration from the
+moment the gaining instance first sees the Lease**, because an instance only ever measures a
+Lease's age from its own first sighting. A newly started instance has no history to measure against,
+so it waits rather than trust the holder's timestamp.
 
 A terminating instance gives up the values it holds, so an instance newly configured with one picks
 it up at once. This is best effort: a process killed outright releases nothing, so **lease expiry is
