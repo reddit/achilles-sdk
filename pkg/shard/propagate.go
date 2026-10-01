@@ -5,12 +5,12 @@ import (
 )
 
 // Propagate copies the shard label from a root object onto a child it manages, so a sharded
-// controller's child informers can be filtered by the same selector as its roots.
+// controller's children carry the same shard value as their root.
 //
-// The value is taken from the root rather than from the instance's own selector, which keeps it
-// correct for selectors matching several values and makes the child's shard agree with its owner's
+// The value is taken from the root rather than from the instance's own configuration, which stays
+// correct for an instance holding several values and makes the child's shard agree with its owner's
 // by construction. A root with no shard label leaves its children untouched, so this is a no-op
-// when sharding is disabled and for the catch-all instance.
+// when sharding is disabled.
 func Propagate(root, child client.Object) {
 	value, ok := root.GetLabels()[DefaultKey]
 	if !ok {
