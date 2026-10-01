@@ -2,6 +2,7 @@ package shard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -74,6 +75,26 @@ type Owner struct {
 
 	// Replaced wholesale on each sync, so a reader never observes a partially updated view.
 	held atomic.Pointer[sets.Set[string]]
+
+	// syncedAt is when the sync loop last completed, in Unix nanoseconds.
+	syncedAt atomic.Int64
+
+	// observed and confirmed are read and written only by Sync, which one goroutine runs.
+	observed  map[string]observation
+	confirmed map[string]time.Time
+}
+
+// observation is what this process last saw of one value's Lease, and when it saw it.
+//
+// Age is measured from at, this process's own clock, rather than from the holder's RenewTime, so
+// that a holder whose clock is skewed cannot have its live claim mistaken for an abandoned one.
+// Mirrors client-go's leader election, which tracks an observedTime for the same reason. The cost
+// is that a first sighting proves nothing, so an abandoned Lease takes a full duration to claim.
+type observation struct {
+	holder   string
+	renewed  time.Time
+	duration time.Duration
+	at       time.Time
 }
 
 // NewOwner returns an Owner for the given configuration.
@@ -81,7 +102,12 @@ func NewOwner(c client.Client, cfg OwnerConfig) *Owner {
 	if cfg.LeaseDuration == 0 {
 		cfg.LeaseDuration = DefaultLeaseDuration
 	}
-	return &Owner{client: c, cfg: cfg}
+	return &Owner{
+		client:    c,
+		cfg:       cfg,
+		observed:  map[string]observation{},
+		confirmed: map[string]time.Time{},
+	}
 }
 
 // Ownership reports whether this instance may reconcile the given object.
@@ -92,10 +118,20 @@ func (o *Owner) Ownership(obj client.Object) Ownership {
 	}
 
 	held := o.held.Load()
-	if held == nil || !held.Has(value) {
+	if held == nil || !held.Has(value) || o.stale() {
 		return Pending
 	}
 	return Owned
+}
+
+// stale reports whether this instance's view of what it holds is too old to act on.
+//
+// Bounds double reconciliation when the sync loop stops running at all, which refreshes nothing
+// and so never reaches claimIsFresh. Measured against the lease duration, since that is when
+// another instance can take the values over.
+func (o *Owner) stale() bool {
+	at := o.syncedAt.Load()
+	return at == 0 || time.Since(time.Unix(0, at)) > o.cfg.LeaseDuration
 }
 
 // NeedLeaderElection reports that only an instance's leader claims its values, so that a standby
@@ -175,8 +211,9 @@ func (o *Owner) releaseValue(ctx context.Context, value string) error {
 	return nil
 }
 
-// sync logs a failure rather than returning it: letting a Lease lapse hands its value to another
-// instance, which is safe, whereas failing the runnable would take the process down.
+// sync logs a failure rather than returning it, since failing the runnable would take the process
+// down. Ownership is given up by claimIsFresh rather than by this returning, so a failure that
+// persists stops this instance acting on the value regardless.
 func (o *Owner) sync(ctx context.Context) {
 	if err := o.Sync(ctx); err != nil && o.cfg.Log != nil {
 		o.cfg.Log.Warnw("syncing shard ownership", "error", err)
@@ -185,35 +222,87 @@ func (o *Owner) sync(ctx context.Context) {
 
 // Sync claims or renews a Lease for every value this instance serves, then reports which values
 // objects carry that this instance does not serve.
+//
+// Every value is attempted even when earlier ones fail, so that one unreachable Lease cannot mask
+// the state of the values after it, and the failures are returned together.
 func (o *Owner) Sync(ctx context.Context) error {
 	held := sets.New[string]()
 	contested := 0
+	var errs []error
 
 	for _, value := range o.cfg.Shard.Values() {
 		holder, err := o.claim(ctx, value)
-		if err != nil {
-			return err
-		}
+		switch {
+		case err != nil:
+			errs = append(errs, err)
+			// A failure is not evidence the claim is gone, so keep it while it could still be
+			// live. Past that another instance may hold it and acting would double-reconcile.
+			if o.claimIsFresh(value) {
+				held.Insert(value)
+			}
 
-		if holder == o.cfg.Instance {
+		case holder == o.cfg.Instance:
+			o.confirmed[value] = time.Now()
 			held.Insert(value)
-			continue
-		}
 
-		contested++
-		if o.cfg.Log != nil {
-			o.cfg.Log.Warnw("another instance holds a shard value this instance serves",
-				"value", value, "holder", holder)
+		default:
+			delete(o.confirmed, value)
+			contested++
+			if o.cfg.Log != nil {
+				o.cfg.Log.Warnw("another instance holds a shard value this instance serves",
+					"value", value, "holder", holder)
+			}
 		}
 	}
 	o.held.Store(&held)
 
 	if err := o.report(ctx); err != nil {
-		return err
+		errs = append(errs, err)
 	}
 
 	recordClaims(o.cfg.Instance, held.Len(), contested)
-	return nil
+	o.syncedAt.Store(time.Now().UnixNano())
+
+	return errors.Join(errs...)
+}
+
+// claimIsFresh reports whether this process's last confirmed claim on a value could still be live,
+// bounding how long a failing instance goes on acting on it by the lease duration itself.
+func (o *Owner) claimIsFresh(value string) bool {
+	confirmed, ok := o.confirmed[value]
+	return ok && time.Since(confirmed) < o.cfg.LeaseDuration
+}
+
+// observe records the state of a value's Lease, keeping the time of the first sighting of an
+// unchanged one so that age accumulates across syncs.
+func (o *Owner) observe(value string, lease *coordinationv1.Lease) {
+	current := observation{
+		holder:   heldBy(lease),
+		renewed:  renewedAt(lease),
+		duration: declaredDuration(lease, o.cfg.LeaseDuration),
+		at:       time.Now(),
+	}
+
+	if prev, ok := o.observed[value]; ok &&
+		prev.holder == current.holder &&
+		prev.renewed.Equal(current.renewed) {
+		return
+	}
+	o.observed[value] = current
+}
+
+// aged reports whether the Lease this process last saw for a value has gone unrenewed for its
+// whole duration, measured from when we saw it.
+func (o *Owner) aged(value string) bool {
+	obs, ok := o.observed[value]
+	if !ok {
+		return false
+	}
+	// Nobody ever renewed it, so there is no claim to have aged out.
+	if obs.renewed.IsZero() {
+		return true
+	}
+	return time.Since(obs.at) > obs.duration
 }
 
 // claim drives one value's Lease towards being held by this process, returning the instance that
@@ -246,8 +335,10 @@ func (o *Owner) claim(ctx context.Context, value string) (string, error) {
 		return "", fmt.Errorf("getting shard lease for value %q: %w", value, err)
 	}
 
+	o.observe(value, &lease)
+
 	holder := lease.Labels[InstanceLabelKey]
-	if !o.mayClaim(&lease) {
+	if !o.mayClaim(value, &lease) {
 		return holder, nil
 	}
 
@@ -264,12 +355,13 @@ func (o *Owner) claim(ctx context.Context, value string) (string, error) {
 
 // mayClaim reports whether this process can take a Lease.
 //
-// A Lease bearing our own instance is claimable even while unexpired: leader election admits one
-// leader per instance at a time, so it was left by a predecessor of ours and waiting out its
-// expiry would only add failover latency.
-func (o *Owner) mayClaim(lease *coordinationv1.Lease) bool {
+// A Lease bearing our own instance is claimable even while live: leader election admits one leader
+// per instance at a time, so it was left by a predecessor of ours and waiting for it to age out
+// would only add failover latency. That shortcut is what keeps a rolling update prompt despite
+// age being measured from first sighting.
+func (o *Owner) mayClaim(value string, lease *coordinationv1.Lease) bool {
 	return heldBy(lease) == "" ||
-		expired(lease) ||
+		o.aged(value) ||
 		lease.Labels[InstanceLabelKey] == o.cfg.Instance
 }
 

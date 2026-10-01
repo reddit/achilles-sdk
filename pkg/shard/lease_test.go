@@ -23,20 +23,24 @@ func TestLeaseNameIsReadableAndValid(t *testing.T) {
 	}
 }
 
-func TestExpired(t *testing.T) {
-	renewed := func(ago time.Duration, duration int32) *coordinationv1.Lease {
-		at := metav1.NewMicroTime(time.Now().Add(-ago))
-		return &coordinationv1.Lease{Spec: coordinationv1.LeaseSpec{
-			RenewTime:            &at,
-			LeaseDurationSeconds: &duration,
-		}}
-	}
-
-	assert.False(t, expired(renewed(time.Second, 30)))
-	assert.True(t, expired(renewed(time.Minute, 30)))
+func TestRenewedAt(t *testing.T) {
+	at := metav1.NewMicroTime(time.Now())
+	assert.Equal(t, at.Time, renewedAt(&coordinationv1.Lease{
+		Spec: coordinationv1.LeaseSpec{RenewTime: &at},
+	}))
 
 	// A Lease nobody has ever renewed holds nothing.
-	assert.True(t, expired(&coordinationv1.Lease{}))
+	assert.True(t, renewedAt(&coordinationv1.Lease{}).IsZero())
+}
+
+// The holder declares how long its claim lasts, so that is what it is measured against.
+func TestDeclaredDuration(t *testing.T) {
+	seconds := int32(45)
+	assert.Equal(t, 45*time.Second, declaredDuration(&coordinationv1.Lease{
+		Spec: coordinationv1.LeaseSpec{LeaseDurationSeconds: &seconds},
+	}, DefaultLeaseDuration))
+
+	assert.Equal(t, DefaultLeaseDuration, declaredDuration(&coordinationv1.Lease{}, DefaultLeaseDuration))
 }
 
 func TestHeldBy(t *testing.T) {

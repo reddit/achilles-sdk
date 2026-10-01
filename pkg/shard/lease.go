@@ -28,17 +28,23 @@ func leaseName(value string) string {
 	return fmt.Sprintf("%s-%s", leasePrefix, value)
 }
 
-// expired reports whether a Lease's holder has stopped renewing it.
-func expired(lease *coordinationv1.Lease) bool {
+// renewedAt is when a Lease's holder last renewed it, zero when nothing ever has.
+//
+// Only ever compared against itself to detect renewal. Measuring age from it would trust the
+// holder's clock; see observation.
+func renewedAt(lease *coordinationv1.Lease) time.Time {
 	if lease.Spec.RenewTime == nil {
-		return true
+		return time.Time{}
 	}
+	return lease.Spec.RenewTime.Time
+}
 
-	duration := DefaultLeaseDuration
-	if lease.Spec.LeaseDurationSeconds != nil {
-		duration = time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
+// declaredDuration is how long the holder says its claim lasts.
+func declaredDuration(lease *coordinationv1.Lease, fallback time.Duration) time.Duration {
+	if lease.Spec.LeaseDurationSeconds == nil {
+		return fallback
 	}
-	return time.Since(lease.Spec.RenewTime.Time) > duration
+	return time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
 }
 
 // heldBy is the identity currently holding a Lease, empty when nothing holds it.

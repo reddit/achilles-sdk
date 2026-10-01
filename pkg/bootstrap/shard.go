@@ -241,7 +241,9 @@ func inventoryFunc(
 			if !ok {
 				return inventory, fmt.Errorf("%s list is not a client.ObjectList", gvk)
 			}
-			if err := c.List(ctx, list); err != nil {
+			// Only labels are read and nothing is retained, so the cache's defensive copy of
+			// every object would be wasted work on a scan that repeats every few seconds.
+			if err := c.List(ctx, list, client.UnsafeDisableDeepCopy); err != nil {
 				return inventory, fmt.Errorf("listing %s: %w", gvk, err)
 			}
 
