@@ -169,6 +169,54 @@ func TestSyncRenewsLeasesItAlreadyHolds(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(valuesHeld.WithLabelValues("inst-a")))
 }
 
+// Sync replaces what this instance holds rather than adding to it, so a value taken by another
+// instance stops being owned. Were it additive, the loser would go on reconciling the value's
+// objects alongside its new owner — the one thing the Lease exists to prevent.
+func TestValueTakenByAnotherInstanceStopsBeingOwned(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+	o := testOwner(t, c, "inst-a", "pod-a", []string{"0", "1"}, nil)
+	require.NoError(t, o.Sync(context.Background()))
+	require.Equal(t, Owned, o.Ownership(labeled("0")))
+
+	// What a process stalled past its lease expiry wakes up to.
+	taken := getLease(t, c, "0")
+	identity := "pod-b"
+	taken.Spec.HolderIdentity = &identity
+	taken.Labels[InstanceLabelKey] = "inst-b"
+	require.NoError(t, c.Update(context.Background(), taken))
+
+	require.NoError(t, o.Sync(context.Background()))
+
+	assert.Equal(t, Pending, o.Ownership(labeled("0")))
+	assert.Equal(t, Owned, o.Ownership(labeled("1")), "values still held must survive the loss of another")
+}
+
+// A value lost to another instance is reclaimed once that holder stops renewing, without this
+// instance being restarted.
+func TestValueRegainedOnceTheOtherHoldersLeaseExpires(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithObjects(heldLease("0", "regain-b", "pod-b", time.Second)).
+		Build()
+	o := testOwner(t, c, "regain-a", "pod-a", []string{"0"}, nil)
+
+	require.NoError(t, o.Sync(context.Background()))
+	require.Equal(t, Pending, o.Ownership(labeled("0")))
+	require.Equal(t, 1.0, testutil.ToFloat64(valuesContested.WithLabelValues("regain-a")))
+	require.Equal(t, 0.0, testutil.ToFloat64(valuesHeld.WithLabelValues("regain-a")))
+
+	stale := getLease(t, c, "0")
+	renewed := metav1.NewMicroTime(time.Now().Add(-time.Hour))
+	stale.Spec.RenewTime = &renewed
+	require.NoError(t, c.Update(context.Background(), stale))
+
+	require.NoError(t, o.Sync(context.Background()))
+
+	assert.Equal(t, Owned, o.Ownership(labeled("0")))
+	assert.Equal(t, "pod-a", heldBy(getLease(t, c, "0")))
+	assert.Equal(t, 0.0, testutil.ToFloat64(valuesContested.WithLabelValues("regain-a")), "contention must clear, not just be recorded")
+	assert.Equal(t, 1.0, testutil.ToFloat64(valuesHeld.WithLabelValues("regain-a")))
+}
+
 // Every instance sees every object, so each reports every value in use. A value no instance serves
 // is then the one every instance reports as ignored.
 func TestEveryValueInUseIsReportedAsServedOrIgnored(t *testing.T) {
