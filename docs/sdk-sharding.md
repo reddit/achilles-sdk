@@ -46,6 +46,34 @@ operator's decision, so an unassigned value is reported rather than guessed at.
 Leaving `--shard-values` empty disables sharding, and the controller reconciles every object it
 manages.
 
+4. Webhooks—To shard webhooks, you must properly populate the webhook configuration's `objectSelector`.
+
+    ```yaml
+    webhooks:
+      - name: critical.applications.infrared.reddit.com
+        objectSelector:
+          matchExpressions:
+            - key: shard.infrared.reddit.com/key
+              operator: In
+              values: ["0", "1"]
+        clientConfig:
+          service:
+            name: application-controller-workload-critical
+    ```
+
+    Then the wrong pod is never called at all. Four things to know before relying on it:
+   - **`objectSelector` matches if either the new or the old object matches.** The API server evaluates
+     `matchObject(attr.GetObject(), selector) || matchObject(attr.GetOldObject(), selector)`
+     ([`predicates/object/matcher.go`](https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/apiserver/pkg/admission/plugin/webhook/predicates/object/matcher.go#L60)).
+     So relabelling an object from one shard to another calls **both** instances' webhooks. Per-shard
+     webhooks are not mutually exclusive across a relabel.
+   - **On CREATE there is no old object**, so an object whose shard label has not been stamped yet
+     matches no sharded webhook. If the label comes from a mutating webhook or a Kyverno policy, do not
+     rely on inter-webhook ordering to fix this; require the label on the incoming object instead.
+   - **The serving certificate needs SANs for every per-instance Service name**, or a certificate each.
+   - **Failure blast radius is split, which is the upside.** With `failurePolicy: Fail`, one instance
+     being down blocks writes only to its own shard rather than to the whole type.
+
 ## How exclusion works
 
 Two Leases carry the whole design.
@@ -161,22 +189,6 @@ A terminating instance gives up the values it holds, so an instance newly config
 it up at once. This is best effort: a process killed outright releases nothing, so **lease expiry is
 what actually bounds how long a value stays claimed.** Do not design around prompt release.
 
-### Rolling updates do not need `strategy: Recreate`
-
-Leader election already provides the invariant that `Recreate` would be reached for. Controllers and
-the shard Owner are both leader-gated, so during a rolling update the new pod starts as a standby: it
-runs no reconcilers and claims no values until the outgoing pod has given up the leader Lease.
-Version N and N+1 coexist as processes but never as reconcilers.
-
-`Recreate` would only remove the surge, which was never what caused the overlap, and it adds a window
-with no leader, no values held, and nothing reconciled. It also does nothing about version skew
-*between* instances, since each Deployment rolls out independently — one can be on N+1 while another
-is still on N, each serving its own values. That is inherent to a multi-Deployment fleet.
-
-The one surface where N and N+1 really do run concurrently is the webhook, because webhook servers
-are deliberately not leader-gated. Keep webhook logic tolerant of both versions rather than
-serialising deploys to avoid it.
-
 ## What cannot be sharded
 
 ### CRDs
@@ -199,52 +211,6 @@ in the cluster:
 This is the ordinary rule for rolling out any schema change, but sharding makes it apply for longer
 and across more processes: a fleet of several Deployments is updated one at a time, so mixed versions
 are the normal state during a deploy rather than a brief transition.
-
-### Webhooks
-
-Webhook servers are deliberately not leader-gated, so **every replica of every instance serves
-webhook traffic.** Sharding is not propagated to them, and webhooks must be written to be
-shard-agnostic.
-
-This is not a new constraint. A webhook already runs on standby replicas, whose controllers never
-ran, so it cannot depend on reconcile-derived in-memory state today. Nothing about sharding changes
-that, and because no informer is shard-filtered, no instance has a less complete view than another.
-
-Filtering in-process would break them. The API server calls one endpoint, a Service load-balances to
-some pod, and that pod has to answer — rejecting a request outside its shard would break the API, and
-allowing it unexamined would defeat the webhook.
-
-#### If a per-shard webhook is genuinely needed
-
-Do the routing at the API server rather than in the process: give each instance its own Service and
-its own webhook configuration, selecting that instance's values.
-
-```yaml
-webhooks:
-  - name: critical.applications.infrared.reddit.com
-    objectSelector:
-      matchExpressions:
-        - key: shard.infrared.reddit.com/key
-          operator: In
-          values: ["0", "1"]
-    clientConfig:
-      service:
-        name: application-controller-workload-critical
-```
-
-Then the wrong pod is never called at all. Four things to know before relying on it:
-
-- **`objectSelector` matches if either the new or the old object matches.** The API server evaluates
-  `matchObject(attr.GetObject(), selector) || matchObject(attr.GetOldObject(), selector)`
-  ([`predicates/object/matcher.go`](https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/apiserver/pkg/admission/plugin/webhook/predicates/object/matcher.go#L60)).
-  So relabelling an object from one shard to another calls **both** instances' webhooks. Per-shard
-  webhooks are not mutually exclusive across a relabel.
-- **On CREATE there is no old object**, so an object whose shard label has not been stamped yet
-  matches no sharded webhook. If the label comes from a mutating webhook or a Kyverno policy, do not
-  rely on inter-webhook ordering to fix this; require the label on the incoming object instead.
-- **The serving certificate needs SANs for every per-instance Service name**, or a certificate each.
-- **Failure blast radius is split, which is the upside.** With `failurePolicy: Fail`, one instance
-  being down blocks writes only to its own shard rather than to the whole type.
 
 ## Stamp the build version
 
