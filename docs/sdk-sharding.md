@@ -29,22 +29,28 @@ operator's decision, so an unassigned value is reported rather than guessed at.
 
    Only root types need listing. Objects a reconciler produces inherit their root's shard value, so
    children follow their parent's instance automatically.
-3. Give each Deployment its values, and enable leader election:
+3. Give each Deployment its values, the same Lease prefix, and leader election:
 
    ```yaml
    # Deployment A
    - --leader-election
+   - --shard-lease-prefix=my-controller-shard
    - --shard-values=0,1
    ```
 
    ```yaml
    # Deployment B
    - --leader-election
+   - --shard-lease-prefix=my-controller-shard
    - --shard-values=2,3
    ```
 
 Leaving `--shard-values` empty disables sharding, and the controller reconciles every object it
-manages.
+manages. `--shard-lease-prefix` is then not required, since nothing names a Lease.
+
+**Every instance of one controller must be given the same prefix**, since the Leases are what keep
+two of them from reconciling an object twice. See [Naming the
+Leases](#naming-the-leases).
 
 4. Webhooks—To shard webhooks, you must properly populate the webhook configuration's `objectSelector`.
 
@@ -85,9 +91,9 @@ Two Leases carry the whole design.
 per Deployment. This is controller-runtime's own leader election, which is why
 `--leader-election` is required.
 
-**A Lease per shard value**, named `achilles-shard-<value>`, admits one active instance per value.
-Claiming it is a conflict-checked write, so two instances configured with the same value cannot
-both succeed.
+**A Lease per shard value**, named `<--shard-lease-prefix>-<value>`, admits one active instance per
+value. Claiming it is a conflict-checked write, so two instances configured with the same value
+cannot both succeed.
 
 Both are needed because they answer different questions. Configuration says which values an
 instance *wants*; the value Lease says which it may *act on*. Configuration can be wrong, and the
@@ -108,6 +114,38 @@ Expiry is judged the same way: from when *this* process saw a Lease, never from 
 `renewTime`. A holder with a skewed clock therefore cannot have its live claim mistaken for an
 abandoned one. The cost is that a first sighting proves nothing — see below.
 
+### Naming the Leases
+
+`--shard-lease-prefix` is required whenever `--shard-values` is set. The prefix separates shard
+Leases from the leader election and kubelet Leases sharing the namespace, makes them identifiable in
+`kubectl get leases`, and — because it belongs to the controller rather than to the SDK — lets two
+sharded controllers share a namespace without contending for each other's Leases.
+
+Which means the prefix is an invariant, not a label:
+
+- **Every instance of one controller must be given the same prefix.** The Lease is the
+  mutual-exclusion token; instances naming different Leases exclude nobody.
+- **A different sharded controller in the same namespace must be given a different one.**
+
+Getting the first wrong **fails silently**. Each instance claims its own uncontended Lease, so two
+instances configured with the same value both believe they own it and both reconcile its objects —
+the double reconciliation the Lease exists to prevent, with no contention to show for it. Nothing
+reports it: `achilles_shard_values_contested` stays at `0` precisely because there is no contention.
+Pin the prefix once per controller where the overlays cannot drift apart, and assert it over the
+rendered manifests.
+
+There is deliberately no default. The SDK could derive one from the instance name, but that is
+per-Deployment, which is exactly the thing that must *not* vary between instances of one controller.
+
+Changing the prefix is a fleet-wide rolling update, during which instances on either side of the
+change name different Leases and so stop excluding each other. Harmless while their values are
+disjoint, which is the designed state, but the Lease is not there to catch an overlap for the
+duration. Leases under the old prefix are left behind unheld and can be deleted.
+
+The resulting name, `<prefix>-<value>`, must be a valid Kubernetes object name, and both parts are
+checked at startup against the configured values. A prefix that cannot name a Lease would otherwise
+surface only as a value no instance ever owns.
+
 ### What it does and does not buy
 
 Sharding bounds the *write* path: each instance reconciles a slice of the objects. It does not bound
@@ -126,7 +164,7 @@ metadata:
 
 The label must be a valid DNS label, since it names a Lease. Values that are not — uppercase,
 underscores, or longer than 63 characters — are rejected at startup rather than mangled, so that the
-Lease name stays derivable from the value alone.
+Lease name stays derivable from the prefix and the value alone.
 
 Any stable property works as the value: a criticality tier, a region, a hash of the object name. A
 mutating policy is the usual way to stamp it, so objects are labelled without their authors knowing
@@ -281,6 +319,10 @@ and expose the SHA separately in a log line or metric.
 | Two instances given one value | `achilles_shard_values_contested > 0` | Overlapping `--shard-values`. Safe, but the assignment is arbitrary. |
 | An instance holds nothing | `achilles_shard_values_held == 0` | Its values are all held elsewhere, or it has not synced. |
 
+A mismatched `--shard-lease-prefix` is absent from this table because it is unalertable: there is no
+contention to observe. Guard it in the manifests instead — see [Naming the
+Leases](#naming-the-leases).
+
 ## Requirements
 
 Each instance reads its own workload to learn its name, and reads and writes the shard Leases:
@@ -300,6 +342,6 @@ Each instance reads its own workload to learn its name, and reads and writes the
 `replicasets` is needed because a Deployment interposes a per-revision ReplicaSet between itself and
 its pods. Pods of a StatefulSet or DaemonSet need only `pods`.
 
-Leases live in `--leader-election-namespace`, defaulting to the pod's own namespace. Because the
-Lease name is derived from the value alone, two *different* sharded controllers sharing a namespace
-would contend for the same Leases. Give each sharded controller its own namespace.
+Leases live in `--leader-election-namespace`, defaulting to the pod's own namespace. Two *different*
+sharded controllers may share that namespace, provided each is given its own
+`--shard-lease-prefix` — see [Naming the Leases](#naming-the-leases).

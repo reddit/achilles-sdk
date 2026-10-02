@@ -33,10 +33,11 @@ func shardedOwner(t *testing.T) *shard.Owner {
 	require.NoError(t, err)
 
 	return shard.NewOwner(fake.NewClientBuilder().Build(), shard.OwnerConfig{
-		Shard:     s,
-		Instance:  "inst-a",
-		Namespace: "ns",
-		Identity:  "pod-a",
+		Shard:       s,
+		Instance:    "inst-a",
+		Namespace:   "ns",
+		Identity:    "pod-a",
+		LeasePrefix: "test-shard",
 		List: func(context.Context) (shard.Inventory, error) {
 			return shard.Inventory{}, nil
 		},

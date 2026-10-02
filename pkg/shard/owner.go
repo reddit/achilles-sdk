@@ -49,6 +49,11 @@ type OwnerConfig struct {
 	// pod name.
 	Identity string
 
+	// LeasePrefix names this controller's shard Leases. Every instance of one controller must be
+	// given the same prefix; a different controller sharing the namespace must not. Validate it
+	// against the configured values with ValidateLeasePrefix.
+	LeasePrefix string
+
 	// LeaseDuration is how long a claimed value stays claimed without renewal. Defaults to
 	// DefaultLeaseDuration.
 	LeaseDuration time.Duration
@@ -185,7 +190,7 @@ func (o *Owner) release() {
 // Identity-checked and conflict-checked, because clearing the holder of a value another process
 // has since taken would take it from them rather than give it up.
 func (o *Owner) releaseValue(ctx context.Context, value string) error {
-	key := client.ObjectKey{Namespace: o.cfg.Namespace, Name: leaseName(value)}
+	key := client.ObjectKey{Namespace: o.cfg.Namespace, Name: leaseName(o.cfg.LeasePrefix, value)}
 
 	var lease coordinationv1.Lease
 	if err := o.client.Get(ctx, key, &lease); apierrors.IsNotFound(err) {
@@ -311,7 +316,7 @@ func (o *Owner) aged(value string) bool {
 // The claim is a conflict-checked write against the version just read, so two instances configured
 // with the same value cannot both succeed.
 func (o *Owner) claim(ctx context.Context, value string) (string, error) {
-	key := client.ObjectKey{Namespace: o.cfg.Namespace, Name: leaseName(value)}
+	key := client.ObjectKey{Namespace: o.cfg.Namespace, Name: leaseName(o.cfg.LeasePrefix, value)}
 
 	var lease coordinationv1.Lease
 	err := o.client.Get(ctx, key, &lease)
