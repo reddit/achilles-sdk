@@ -16,12 +16,14 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	zaputil "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/reddit/achilles-sdk/pkg/logging"
+	"github.com/reddit/achilles-sdk/pkg/shard"
 )
 
 const (
@@ -96,6 +98,10 @@ type Options struct {
 	// The duration that non-leader candidates will  wait to force acquire leadership.
 	// This is measured against time of last observed ack. Default is 15 seconds.
 	LeaderElectionLeaseDuration time.Duration
+
+	// Shard divides this controller's objects between several instances of it. Its zero value
+	// disables sharding.
+	Shard ShardOptions
 }
 
 func (o *Options) AddToFlags(flags *pflag.FlagSet) {
@@ -122,6 +128,9 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 	flags.StringVar(&o.LeaderElectionNamespace, "leader-election-namespace", "", "Namespace in which the leader election resource will be created")
 	flags.DurationVar(&o.LeaderElectionRenewDeadline, "renew-deadline", 10*time.Second, "Renew deadline for leader election controller. Must be set to ensure the resource lock has an appropriate client timeout. If set too low, a single slow response from the API server can result in losing leadership. Defaults to 10s")
 	flags.DurationVar(&o.LeaderElectionLeaseDuration, "lease-duration", 15*time.Second, "Duration that non-leader candidates will wait to force acquire leadership. This is measured against time of last observed ack. Default is 15 seconds.")
+
+	flags.StringSliceVar(&o.Shard.Values, "shard-values", nil, fmt.Sprintf("Values of the %q label whose objects this instance reconciles, e.g. \"0,1\". Every value in use must be given to some instance: one no instance is given, including the absent value, is reconciled by nobody. Empty disables sharding", shard.DefaultKey))
+	flags.StringVar(&o.Shard.LeasePrefix, "shard-lease-prefix", "", "Prefix for the names of this controller's shard Leases, e.g. \"my-controller-shard\". Required when shard-values is set. Every instance of one controller must be given the same prefix, since its Leases are what keep two instances from reconciling an object twice; another sharded controller in the same namespace must be given a different one. \"<prefix>-<value>\" must be a valid Kubernetes object name")
 }
 
 // StartFunc is a function for starting a controller manager
@@ -145,44 +154,88 @@ func Start(
 		return fmt.Errorf("building k8s client config: %w", err)
 	}
 
-	mgr, err := buildManager(cfg, log, schemes, opts)
+	mgr, err := newManager(ctx, cfg, log, schemes, opts)
 	if err != nil {
-		return fmt.Errorf("building manager: %w", err)
+		return err
 	}
+
+	startCtx := ctrl.SetupSignalHandler()
 
 	if err := startFunc(ctx, mgr); err != nil {
 		return fmt.Errorf("running start func: %w", err)
 	}
 
 	log.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(startCtx); err != nil {
 		return fmt.Errorf("starting manager: %w", err)
 	}
 
 	return nil
 }
 
-func buildManager(
+// newManager builds the manager along with everything that has to be in place before it exists.
+func newManager(
+	ctx context.Context,
 	cfg *rest.Config,
 	log *zap.SugaredLogger,
 	schemes runtime.SchemeBuilder,
 	opts *Options,
 ) (manager.Manager, error) {
-	scheme := runtime.NewScheme()
-	// Preserve controller-runtime's default built-in types while keeping caller
-	// registrations local to this manager and available during cache setup.
-	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		return nil, fmt.Errorf("adding Kubernetes schemes: %w", err)
+	scheme, err := buildScheme(schemes)
+	if err != nil {
+		return nil, err
 	}
-	if schemes != nil {
-		if err := schemes.AddToScheme(scheme); err != nil {
-			return nil, fmt.Errorf("adding schemes: %w", err)
+
+	// Resolved before the manager, which it names the leader election lock for.
+	sh, err := resolveSharding(ctx, cfg, opts)
+	if err != nil {
+		return nil, fmt.Errorf("configuring sharding: %w", err)
+	}
+
+	// mgr is assigned below. The inventory scan resolves the manager's cached reader on use,
+	// which is also the only time it is usable: it is unready until the manager has started.
+	var mgr manager.Manager
+	var owner *shard.Owner
+	if sh != nil {
+		owner, err = sh.newOwner(scheme, func() client.Reader { return mgr.GetClient() }, opts, log)
+		if err != nil {
+			return nil, fmt.Errorf("setting up sharding: %w", err)
 		}
+	}
+
+	mgr, err = buildManager(cfg, log, scheme, opts, owner)
+	if err != nil {
+		return nil, fmt.Errorf("building manager: %w", err)
+	}
+
+	if sh != nil {
+		if err := sh.register(mgr, owner, log); err != nil {
+			return nil, err
+		}
+	}
+
+	return mgr, nil
+}
+
+func buildManager(
+	cfg *rest.Config,
+	log *zap.SugaredLogger,
+	scheme *runtime.Scheme,
+	opts *Options,
+	owner *shard.Owner,
+) (manager.Manager, error) {
+	// Every runnable, and so every reconcile, is given a context derived from this one rather than
+	// from the one mgr.Start receives, which controller-runtime uses only to stop the manager.
+	// Carrying the Owner here is what lets the reconcile gate see it at all.
+	baseCtx := context.Background()
+	if owner != nil {
+		baseCtx = shard.NewContext(baseCtx, owner)
 	}
 
 	mgr, err := manager.New(
 		cfg,
 		manager.Options{
+			BaseContext:             func() context.Context { return baseCtx },
 			HealthProbeBindAddress:  opts.HealthAddr,
 			Metrics:                 server.Options{BindAddress: opts.MetricsAddr},
 			Logger:                  zapr.NewLogger(log.Desugar()),
@@ -207,6 +260,21 @@ func buildManager(
 		return nil, fmt.Errorf("adding readyz: %w", err)
 	}
 	return mgr, nil
+}
+
+// buildScheme preserves controller-runtime's default built-in types while keeping caller
+// registrations local to this manager and available during cache setup.
+func buildScheme(schemes runtime.SchemeBuilder) (*runtime.Scheme, error) {
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("adding Kubernetes schemes: %w", err)
+	}
+	if schemes != nil {
+		if err := schemes.AddToScheme(scheme); err != nil {
+			return nil, fmt.Errorf("adding schemes: %w", err)
+		}
+	}
+	return scheme, nil
 }
 
 // cacheOptions returns the configured cache options with SyncPeriod defaulted
