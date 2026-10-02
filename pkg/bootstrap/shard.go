@@ -27,6 +27,9 @@ import (
 const (
 	errShardTypesUnset = "Shard.Types must be set when shard-values is set, otherwise no object " +
 		"would belong to a shard"
+	errShardLeasePrefixUnset = "shard-lease-prefix must be set when shard-values is set: it names " +
+		"this controller's shard Leases, keeping them apart from those of any other sharded " +
+		"controller in the same namespace"
 	errShardLeaderElectionIDSet = "leader-election-id must not be set when shard-values is set: " +
 		"the lock is named after this instance's own workload, so that two instances cannot share one"
 	errShardLeaderElectionDisabled = "leader-election must be enabled when shard-values is set, " +
@@ -49,6 +52,13 @@ type ShardOptions struct {
 	// listed here is reconciled by every instance.
 	Types []client.Object
 
+	// LeasePrefix names this controller's shard Leases, and is required when Values is set.
+	//
+	// Per controller rather than fixed by the SDK: two sharded controllers in one namespace must
+	// not contend for each other's Leases, while every instance of one controller must share a
+	// prefix or its Leases exclude nobody.
+	LeasePrefix string
+
 	// InstanceName overrides the name derived from this pod's workload. Set it only when running
 	// outside a Kubernetes workload, such as in tests.
 	InstanceName string
@@ -67,7 +77,8 @@ type sharding struct {
 	instance string
 	identity string
 
-	namespace string
+	namespace   string
+	leasePrefix string
 }
 
 // resolveSharding prepares sharding and names the leader election lock after this instance,
@@ -105,11 +116,12 @@ func resolveSharding(ctx context.Context, cfg *rest.Config, o *Options) (*shardi
 	o.LeaderElectionID = instance
 
 	return &sharding{
-		shard:     s,
-		client:    c,
-		instance:  instance,
-		identity:  identity,
-		namespace: namespace,
+		shard:       s,
+		client:      c,
+		instance:    instance,
+		identity:    identity,
+		namespace:   namespace,
+		leasePrefix: o.Shard.LeasePrefix,
 	}, nil
 }
 
@@ -123,6 +135,14 @@ func resolveShard(o *Options) (*shard.Shard, error) {
 
 	if len(o.Shard.Types) == 0 {
 		return nil, errors.New(errShardTypesUnset)
+	}
+	// Only once sharding is on: nothing names a Lease while it is off, so requiring a prefix
+	// regardless would reject every controller that does not shard.
+	if o.Shard.LeasePrefix == "" {
+		return nil, errors.New(errShardLeasePrefixUnset)
+	}
+	if err := shard.ValidateLeasePrefix(o.Shard.LeasePrefix, s.Values()); err != nil {
+		return nil, err
 	}
 	if o.LeaderElectionID != "" {
 		return nil, errors.New(errShardLeaderElectionIDSet)
@@ -152,12 +172,13 @@ func (sh *sharding) newOwner(
 	}
 
 	return shard.NewOwner(sh.client, shard.OwnerConfig{
-		Shard:     sh.shard,
-		Instance:  sh.instance,
-		Namespace: sh.namespace,
-		Identity:  sh.identity,
-		List:      inventoryFunc(reader, scheme, sh.shard.Key(), gvks),
-		Log:       log,
+		Shard:       sh.shard,
+		Instance:    sh.instance,
+		Namespace:   sh.namespace,
+		Identity:    sh.identity,
+		LeasePrefix: sh.leasePrefix,
+		List:        inventoryFunc(reader, scheme, sh.shard.Key(), gvks),
+		Log:         log,
 	}), nil
 }
 
@@ -167,8 +188,11 @@ func (sh *sharding) register(mgr manager.Manager, owner *shard.Owner, log *zap.S
 		return fmt.Errorf("registering shard ownership: %w", err)
 	}
 
+	// The prefix is logged because mismatching it between instances of one controller is otherwise
+	// silent: each claims its own uncontended Leases and both reconcile the same objects.
 	log.Infow("sharding enabled",
-		"values", sh.shard.String(), "instance", sh.instance, "namespace", sh.namespace)
+		"values", sh.shard.String(), "instance", sh.instance, "namespace", sh.namespace,
+		"leasePrefix", sh.leasePrefix)
 	return nil
 }
 

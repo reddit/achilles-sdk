@@ -102,6 +102,7 @@ var _ = Describe("a sharded manager", func() {
 				Values:       []string{served},
 				Types:        []client.Object{&testv1alpha1.TestClaim{}},
 				InstanceName: "inst-a",
+				LeasePrefix:  "test-claim-shard",
 			},
 		}
 

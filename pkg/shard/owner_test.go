@@ -20,7 +20,22 @@ import (
 
 const testNamespace = "ns"
 
+// Deliberately not the prefix any consumer would pick, so a Lease name that ignored the configured
+// one would not happen to match.
+const testLeasePrefix = "test-shard"
+
 func testOwner(t *testing.T, c client.Client, instance, identity string, values []string, list ListFunc) *Owner {
+	t.Helper()
+	return testPrefixedOwner(t, c, testLeasePrefix, instance, identity, values, list)
+}
+
+func testPrefixedOwner(
+	t *testing.T,
+	c client.Client,
+	prefix, instance, identity string,
+	values []string,
+	list ListFunc,
+) *Owner {
 	t.Helper()
 
 	s, err := Parse(DefaultKey, values)
@@ -31,11 +46,12 @@ func testOwner(t *testing.T, c client.Client, instance, identity string, values 
 		list = inventoryOf(false)
 	}
 	return NewOwner(c, OwnerConfig{
-		Shard:     s,
-		Instance:  instance,
-		Namespace: testNamespace,
-		Identity:  identity,
-		List:      list,
+		Shard:       s,
+		Instance:    instance,
+		Namespace:   testNamespace,
+		Identity:    identity,
+		LeasePrefix: prefix,
+		List:        list,
 	})
 }
 
@@ -60,7 +76,7 @@ func heldLease(value, instance, identity string, renewedAgo time.Duration) *coor
 	return &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
-			Name:      leaseName(value),
+			Name:      leaseName(testLeasePrefix, value),
 			Labels:    map[string]string{InstanceLabelKey: instance},
 		},
 		Spec: coordinationv1.LeaseSpec{
@@ -73,8 +89,13 @@ func heldLease(value, instance, identity string, renewedAgo time.Duration) *coor
 
 func getLease(t *testing.T, c client.Client, value string) *coordinationv1.Lease {
 	t.Helper()
+	return getPrefixedLease(t, c, testLeasePrefix, value)
+}
+
+func getPrefixedLease(t *testing.T, c client.Client, prefix, value string) *coordinationv1.Lease {
+	t.Helper()
 	var lease coordinationv1.Lease
-	key := client.ObjectKey{Namespace: testNamespace, Name: leaseName(value)}
+	key := client.ObjectKey{Namespace: testNamespace, Name: leaseName(prefix, value)}
 	require.NoError(t, c.Get(context.Background(), key, &lease))
 	return &lease
 }
@@ -162,6 +183,23 @@ func TestValueHeldByAnotherInstanceIsPending(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(valuesContested.WithLabelValues("inst-a")))
 }
 
+// Two controllers sharding the same objects by the same criterion is intended: each does different
+// work on the object. Only the Lease is per-controller, so each must claim its own and neither may
+// defer to the other, however they share a namespace and a value.
+func TestControllersWithDifferentPrefixesEachHoldTheValue(t *testing.T) {
+	c := fake.NewClientBuilder().Build()
+	workload := testPrefixedOwner(t, c, "workload-shard", "inst-workload", "pod-workload", []string{"0"}, nil)
+	orch := testPrefixedOwner(t, c, "orch-shard", "inst-orch", "pod-orch", []string{"0"}, nil)
+
+	require.NoError(t, workload.Sync(context.Background()))
+	require.NoError(t, orch.Sync(context.Background()))
+
+	assert.Equal(t, Owned, workload.Ownership(labeled("0")))
+	assert.Equal(t, Owned, orch.Ownership(labeled("0")))
+	assert.Equal(t, "pod-workload", heldBy(getPrefixedLease(t, c, "workload-shard", "0")))
+	assert.Equal(t, "pod-orch", heldBy(getPrefixedLease(t, c, "orch-shard", "0")))
+}
+
 // Expiry is measured from when this process saw the Lease, never from the holder's own timestamp,
 // so a holder with a skewed clock cannot have its live claim mistaken for an abandoned one. The
 // cost is that a first sighting tells us nothing, however stale the timestamp looks.
@@ -229,7 +267,7 @@ func TestSyncClaimsEveryValueDespiteFailures(t *testing.T) {
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				attempted = append(attempted, key.Name)
-				if key.Name == leaseName("0") {
+				if key.Name == leaseName(testLeasePrefix, "0") {
 					return apierrors.NewServiceUnavailable("nope")
 				}
 				return c.Get(ctx, key, obj, opts...)
@@ -242,7 +280,7 @@ func TestSyncClaimsEveryValueDespiteFailures(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "0", "the failure must name the value it belongs to")
-	assert.Contains(t, attempted, leaseName("1"), "a later value must still be attempted")
+	assert.Contains(t, attempted, leaseName(testLeasePrefix, "1"), "a later value must still be attempted")
 	assert.Equal(t, Owned, o.Ownership(labeled("1")))
 	assert.Equal(t, Pending, o.Ownership(labeled("0")))
 }

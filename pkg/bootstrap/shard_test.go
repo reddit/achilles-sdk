@@ -41,8 +41,9 @@ var _ = Describe("resolveShard", func() {
 		return &Options{
 			LeaderElection: true,
 			Shard: ShardOptions{
-				Values: []string{"0"},
-				Types:  []client.Object{&corev1.ConfigMap{}},
+				Values:      []string{"0"},
+				Types:       []client.Object{&corev1.ConfigMap{}},
+				LeasePrefix: "ctrl-shard",
 			},
 		}
 	}
@@ -51,6 +52,35 @@ var _ = Describe("resolveShard", func() {
 		s, err := resolveShard(&Options{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(s).To(BeNil())
+	})
+
+	// Sharding is opt-in, so nothing names a Lease until it is on. Requiring the prefix regardless
+	// would reject every controller that does not shard.
+	It("does not require a lease prefix when sharding is disabled", func() {
+		opts := sharded()
+		opts.Shard.Values = nil
+		opts.Shard.LeasePrefix = ""
+
+		s, err := resolveShard(opts)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s).To(BeNil())
+	})
+
+	It("requires a lease prefix, which is what separates one controller's Leases from another's", func() {
+		opts := sharded()
+		opts.Shard.LeasePrefix = ""
+
+		_, err := resolveShard(opts)
+		Expect(err).To(MatchError(errShardLeasePrefixUnset))
+	})
+
+	// A prefix no Lease can be named for shows up at runtime only as a value nobody ever owns.
+	It("rejects a lease prefix that cannot name a Lease", func() {
+		opts := sharded()
+		opts.Shard.LeasePrefix = "Ctrl_Shard"
+
+		_, err := resolveShard(opts)
+		Expect(err).To(MatchError(ContainSubstring(`cannot name the Lease for shard value "0"`)))
 	})
 
 	It("resolves the configured values", func() {
@@ -133,11 +163,12 @@ var _ = Describe("shard value arbitration", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			owners = append(owners, shard.NewOwner(c, shard.OwnerConfig{
-				Shard:     s,
-				Instance:  instance,
-				Namespace: "default",
-				Identity:  instance + "-pod",
-				List:      func(context.Context) (shard.Inventory, error) { return shard.Inventory{}, nil },
+				Shard:       s,
+				Instance:    instance,
+				Namespace:   "default",
+				Identity:    instance + "-pod",
+				LeasePrefix: "ctrl-shard",
+				List:        func(context.Context) (shard.Inventory, error) { return shard.Inventory{}, nil },
 			}))
 		}
 		return owners

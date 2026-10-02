@@ -130,6 +130,7 @@ func (o *Options) AddToFlags(flags *pflag.FlagSet) {
 	flags.DurationVar(&o.LeaderElectionLeaseDuration, "lease-duration", 15*time.Second, "Duration that non-leader candidates will wait to force acquire leadership. This is measured against time of last observed ack. Default is 15 seconds.")
 
 	flags.StringSliceVar(&o.Shard.Values, "shard-values", nil, fmt.Sprintf("Values of the %q label whose objects this instance reconciles, e.g. \"0,1\". Every value in use must be given to some instance: one no instance is given, including the absent value, is reconciled by nobody. Empty disables sharding", shard.DefaultKey))
+	flags.StringVar(&o.Shard.LeasePrefix, "shard-lease-prefix", "", "Prefix for the names of this controller's shard Leases, e.g. \"my-controller-shard\". Required when shard-values is set. Every instance of one controller must be given the same prefix, since its Leases are what keep two instances from reconciling an object twice; another sharded controller in the same namespace must be given a different one. \"<prefix>-<value>\" must be a valid Kubernetes object name")
 }
 
 // StartFunc is a function for starting a controller manager
