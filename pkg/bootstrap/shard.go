@@ -111,8 +111,8 @@ func resolveSharding(ctx context.Context, cfg *rest.Config, o *Options) (*shardi
 		}
 	}
 
-	// Each instance elects a leader among its own replicas, which is what keeps two replicas of
-	// one instance from both claiming its values.
+	// Named after the instance so each elects a leader among its own replicas only; see
+	// instanceName.
 	o.LeaderElectionID = instance
 
 	return &sharding{

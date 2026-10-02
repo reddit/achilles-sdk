@@ -23,20 +23,17 @@ const releaseTimeout = 5 * time.Second
 
 // leaseName names the Lease conferring one shard value.
 //
-// The prefix separates shard Leases from the leader election and kubelet Leases that share the
-// namespace, makes them identifiable in `kubectl get leases`, and — because it is per controller —
-// keeps two sharded controllers in one namespace off each other's Leases. Instances of one
-// controller must share it, or the Lease excludes nobody.
+// The prefix keeps these apart from the leader election and kubelet Leases sharing the namespace,
+// and from another sharded controller's. See ShardOptions.LeasePrefix for how to choose one.
 func leaseName(prefix, value string) string {
 	return fmt.Sprintf("%s-%s", prefix, value)
 }
 
 // ValidateLeasePrefix rejects a prefix that cannot name the Leases for the given values.
 //
-// Checked against each resulting name rather than against the prefix alone, since the separator
-// and the value count towards both the character set and the length ceiling: a prefix that is
-// itself a valid object name can still produce one that is not. Checked at startup because at
-// runtime an unnameable Lease surfaces only as a value no instance ever owns.
+// Checked against each resulting name, not the prefix alone: a prefix that is itself a valid
+// object name can still push one past the character set or length ceiling. Checked at startup
+// because at runtime an unnameable Lease surfaces only as a value no instance ever owns.
 func ValidateLeasePrefix(prefix string, values []string) error {
 	for _, value := range values {
 		if errs := validation.IsDNS1123Subdomain(leaseName(prefix, value)); len(errs) > 0 {

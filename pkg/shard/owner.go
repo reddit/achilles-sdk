@@ -49,13 +49,11 @@ type OwnerConfig struct {
 	// pod name.
 	Identity string
 
-	// LeasePrefix names this controller's shard Leases. Every instance of one controller must be
-	// given the same prefix; a different controller sharing the namespace must not. Validate it
-	// against the configured values with ValidateLeasePrefix.
+	// LeasePrefix names this controller's shard Leases. Validate it against the configured values
+	// with ValidateLeasePrefix.
 	LeasePrefix string
 
-	// LeaseDuration is how long a claimed value stays claimed without renewal. Defaults to
-	// DefaultLeaseDuration.
+	// LeaseDuration defaults to DefaultLeaseDuration.
 	LeaseDuration time.Duration
 
 	// List enumerates the values objects carry, used to report the ones no instance serves.
@@ -69,8 +67,6 @@ type OwnerConfig struct {
 // be reconciled.
 //
 // Configuration decides which values an instance wants; the Leases decide which it may act on.
-// Both are needed, because configuration can be wrong: the Lease is what keeps two instances
-// configured with the same value from reconciling its objects twice.
 //
 // Exclusion is as strong as Kubernetes leader election and no stronger. A Lease carries no fencing
 // token, so a process stalled past its lease expiry can wake up still believing it holds a value.
