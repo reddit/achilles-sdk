@@ -134,29 +134,42 @@ func resolveShard(o *Options) (*shard.Shard, error) {
 	return s, nil
 }
 
-// setup starts the loop that claims this instance's shard values, returning the Owner that gates
-// reconciliation.
-func (sh *sharding) setup(mgr manager.Manager, o *Options, log *zap.SugaredLogger) (*shard.Owner, error) {
-	gvks, err := shardedGVKs(mgr.GetScheme(), o.Shard.Types)
+// newOwner builds the loop that claims this instance's shard values and the Owner that gates
+// reconciliation on them.
+//
+// Built before the manager, because the Owner has to reach reconcilers through the manager's base
+// context, which is fixed at construction. The cached reader the inventory scan needs is therefore
+// supplied as a function and resolved when the scan runs.
+func (sh *sharding) newOwner(
+	scheme *runtime.Scheme,
+	reader func() client.Reader,
+	o *Options,
+	log *zap.SugaredLogger,
+) (*shard.Owner, error) {
+	gvks, err := shardedGVKs(scheme, o.Shard.Types)
 	if err != nil {
 		return nil, err
 	}
 
-	owner := shard.NewOwner(sh.client, shard.OwnerConfig{
+	return shard.NewOwner(sh.client, shard.OwnerConfig{
 		Shard:     sh.shard,
 		Instance:  sh.instance,
 		Namespace: sh.namespace,
 		Identity:  sh.identity,
-		List:      inventoryFunc(mgr.GetClient(), mgr.GetScheme(), sh.shard.Key(), gvks),
+		List:      inventoryFunc(reader, scheme, sh.shard.Key(), gvks),
 		Log:       log,
-	})
+	}), nil
+}
+
+// register runs the Owner under the manager, which gates it on leader election.
+func (sh *sharding) register(mgr manager.Manager, owner *shard.Owner, log *zap.SugaredLogger) error {
 	if err := mgr.Add(owner); err != nil {
-		return nil, fmt.Errorf("registering shard ownership: %w", err)
+		return fmt.Errorf("registering shard ownership: %w", err)
 	}
 
 	log.Infow("sharding enabled",
 		"values", sh.shard.String(), "instance", sh.instance, "namespace", sh.namespace)
-	return owner, nil
+	return nil
 }
 
 // instanceName reports the name of the workload running this pod, which names both the leader
@@ -222,15 +235,17 @@ func shardedGVKs(scheme *runtime.Scheme, types []client.Object) ([]schema.GroupV
 //
 // It reads the manager's cache, which already holds these types because the controllers watch
 // them, so a scan costs no API traffic and is proportional to the number of objects rather than to
-// the number of shards.
+// the number of shards. The reader is resolved per scan because the cache is only usable once the
+// manager has started, which it has by the time the leader-gated Owner runs this.
 func inventoryFunc(
-	c client.Reader,
+	reader func() client.Reader,
 	scheme *runtime.Scheme,
 	key string,
 	gvks []schema.GroupVersionKind,
 ) shard.ListFunc {
 	return func(ctx context.Context) (shard.Inventory, error) {
 		inventory := shard.Inventory{Values: sets.New[string]()}
+		c := reader()
 
 		for _, gvk := range gvks {
 			obj, err := scheme.New(gvk.GroupVersion().WithKind(gvk.Kind + "List"))

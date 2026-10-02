@@ -83,7 +83,7 @@ var _ = Describe("buildManager", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer func() { Expect(testEnv.Stop()).To(Succeed()) }()
 
-			mgr, err := buildManager(testEnv.Cfg, log, schemes, &Options{})
+			mgr, err := buildManager(testEnv.Cfg, log, mustBuildScheme(schemes), &Options{}, nil)
 			Expect(err).NotTo(HaveOccurred())
 
 			// These reads must reach the API server, rather than fail locally
@@ -119,7 +119,7 @@ var _ = Describe("buildManager", func() {
 			},
 		}
 
-		_, err = buildManager(testEnv.Cfg, log, schemes, opts)
+		_, err = buildManager(testEnv.Cfg, log, mustBuildScheme(schemes), opts, nil)
 		Expect(err).NotTo(HaveOccurred())
 	})
 })

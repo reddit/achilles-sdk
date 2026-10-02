@@ -213,7 +213,7 @@ var _ = Describe("inventory", func() {
 		gvks, err := shardedGVKs(c.Scheme(), []client.Object{&corev1.ConfigMap{}})
 		Expect(err).NotTo(HaveOccurred())
 
-		got, err := inventoryFunc(c, c.Scheme(), shard.DefaultKey, gvks)(context.Background())
+		got, err := inventoryFunc(func() client.Reader { return c }, c.Scheme(), shard.DefaultKey, gvks)(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got.Values.UnsortedList()).To(ConsistOf("0"))
 		Expect(got.Missing).To(BeTrue())
