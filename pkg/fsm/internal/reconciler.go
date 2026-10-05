@@ -141,7 +141,7 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 
 		// NOTE: status must be updated upon termination of FSM, otherwise steady state won't be reached because
 		// later states that overwrite status conditions of earlier states will trigger reconcile events
-		if err := r.client.ApplyStatus(ctx, obj); err != nil {
+		if err := r.client.ApplyStatus(ctx, obj, io.WithOptimisticLock()); err != nil {
 			if k8serrors.IsNotFound(err) {
 				return ctrl.Result{}, nil
 			}
