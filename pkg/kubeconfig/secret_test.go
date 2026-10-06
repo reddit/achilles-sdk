@@ -74,6 +74,13 @@ var _ = Describe("kubeconfig secret", func() {
 		actualCfg, err := actualClientCfg.RawConfig()
 		Expect(err).ToNot(HaveOccurred())
 
+		// Deserialization produces an empty Preferences.Extensions map on client-go
+		// v0.33 and earlier but leaves it nil on v0.34+; normalize so the assertion
+		// holds on both.
+		if actualCfg.Preferences.Extensions == nil {
+			actualCfg.Preferences.Extensions = map[string]runtime.Object{}
+		}
+
 		Expect(&actualCfg).To(Equal(cfg))
 	})
 

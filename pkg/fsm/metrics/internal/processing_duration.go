@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -25,13 +24,17 @@ type requestStartTime struct {
 	Failed bool
 }
 
-func (r requestStartTime) key() string {
-	return fmt.Sprintf("%s/%s/%d", r.Namespace, r.Name, r.Generation)
-}
-
+// less orders by (namespace, name, generation), with generation compared numerically —
+// a lexicographic comparison would order generation 9 after generation 10, breaking the
+// range semantics of GetRange/DeleteRange/SetRangeFailed across decimal digit-length boundaries.
 func less(req1, req2 requestStartTime) bool {
-	// compare namespace, name, and generation
-	return req1.key() < req2.key()
+	if req1.Namespace != req2.Namespace {
+		return req1.Namespace < req2.Namespace
+	}
+	if req1.Name != req2.Name {
+		return req1.Name < req2.Name
+	}
+	return req1.Generation < req2.Generation
 }
 
 func NewProcessingStartTimes() *ProcessingStartTimes {
@@ -94,6 +97,36 @@ func (p *ProcessingStartTimes) DeleteRange(name string, namespace string, observ
 	p.startTimes.DescendLessOrEqual(key, func(item requestStartTime) bool {
 		if item.Name != key.Name || item.Namespace != key.Namespace {
 			// end of range
+			return false
+		}
+		items = append(items, item)
+		return true
+	})
+	// delete all matched items from the tree
+	for _, item := range items {
+		p.startTimes.Delete(item)
+	}
+}
+
+// DeleteAll deletes all processing start times for the given (name, namespace), regardless of generation.
+func (p *ProcessingStartTimes) DeleteAll(name string, namespace string) {
+	p.m.Lock()
+	defer p.m.Unlock()
+
+	// all entries for a given (namespace, name) are contiguous in the tree, and generation 0 is a
+	// lower bound (metadata.generation starts at 1), so ascending from generation 0 and stopping at
+	// the first non-matching entry visits exactly the entries for this object
+	key := requestStartTime{
+		Namespace:  namespace,
+		Name:       name,
+		Generation: 0,
+	}
+
+	var items []requestStartTime
+	// accumulate items to delete to avoid mutating tree while iterating
+	p.startTimes.AscendGreaterOrEqual(key, func(item requestStartTime) bool {
+		if item.Name != key.Name || item.Namespace != key.Namespace {
+			// end of range for (name, namespace)
 			return false
 		}
 		items = append(items, item)

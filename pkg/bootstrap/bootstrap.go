@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -61,6 +62,18 @@ type Options struct {
 	// This is a global setting that applies to all controllers. Defaults to 10 hours.
 	// Issue tracking sync periods per controller: https://github.com/reddit/achilles-sdk/issues/171
 	SyncPeriod time.Duration
+
+	// Cache configures the manager's client cache. It has no corresponding CLI flag and must be
+	// set programmatically.
+	//
+	// Use Cache.ByObject (or Cache.DefaultNamespaces, Cache.DefaultLabelSelector, etc.) to scope
+	// the informers backing the manager's cached client. Without scoping, a controller that
+	// watches or manages a high-cardinality built-in type (e.g. Pods) caches every such object
+	// in the cluster, which makes the controller's memory footprint proportional to cluster size
+	// rather than to the set of objects it manages.
+	//
+	// Cache.SyncPeriod, when nil, is defaulted from the SyncPeriod flag.
+	Cache cache.Options
 
 	// Determines whether the controller should use leader election (a form of active-passive HA).
 	LeaderElection bool
@@ -155,20 +168,31 @@ func buildManager(
 	schemes runtime.SchemeBuilder,
 	opts *Options,
 ) (manager.Manager, error) {
+	scheme := runtime.NewScheme()
+	// Preserve controller-runtime's default built-in types while keeping caller
+	// registrations local to this manager and available during cache setup.
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("adding Kubernetes schemes: %w", err)
+	}
+	if schemes != nil {
+		if err := schemes.AddToScheme(scheme); err != nil {
+			return nil, fmt.Errorf("adding schemes: %w", err)
+		}
+	}
+
 	mgr, err := manager.New(
 		cfg,
 		manager.Options{
-			HealthProbeBindAddress: opts.HealthAddr,
-			Metrics:                server.Options{BindAddress: opts.MetricsAddr},
-			Logger:                 zapr.NewLogger(log.Desugar()),
-			Cache: cache.Options{
-				SyncPeriod: &opts.SyncPeriod,
-			},
+			HealthProbeBindAddress:  opts.HealthAddr,
+			Metrics:                 server.Options{BindAddress: opts.MetricsAddr},
+			Logger:                  zapr.NewLogger(log.Desugar()),
+			Cache:                   cacheOptions(opts),
 			LeaderElection:          opts.LeaderElection,
 			LeaderElectionID:        opts.LeaderElectionID,
 			LeaderElectionNamespace: opts.LeaderElectionNamespace,
 			RenewDeadline:           &opts.LeaderElectionRenewDeadline,
 			LeaseDuration:           &opts.LeaderElectionLeaseDuration,
+			Scheme:                  scheme,
 		},
 	)
 	if err != nil {
@@ -182,13 +206,17 @@ func buildManager(
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		return nil, fmt.Errorf("adding readyz: %w", err)
 	}
-
-	if schemes != nil {
-		if err := schemes.AddToScheme(mgr.GetScheme()); err != nil {
-			return nil, err
-		}
-	}
 	return mgr, nil
+}
+
+// cacheOptions returns the configured cache options with SyncPeriod defaulted
+// from the flag-provided value when not set programmatically.
+func cacheOptions(o *Options) cache.Options {
+	cacheOpts := o.Cache
+	if cacheOpts.SyncPeriod == nil {
+		cacheOpts.SyncPeriod = &o.SyncPeriod
+	}
+	return cacheOpts
 }
 
 func buildRestConfig(o *Options) (*rest.Config, error) {
@@ -225,6 +253,10 @@ func buildRestConfig(o *Options) (*rest.Config, error) {
 			CurrentContext: o.KubeContext,
 		},
 	).ClientConfig()
+
+	if err != nil {
+		return nil, err
+	}
 
 	cfg.QPS = o.ClientQPS
 	cfg.Burst = o.ClientBurst

@@ -119,6 +119,44 @@ func TestRecordSuspend(t *testing.T) {
 	}
 }
 
+func TestDeleteSuspend(t *testing.T) {
+	metrics := MustMakeMetrics(scheme, prometheus.NewRegistry())
+	metricsDisabled := MustMakeMetricsWithOptions(scheme, prometheus.NewRegistry(), types.MetricsOptions{DisableMetrics: []types.AchillesMetrics{types.AchillesSuspend}})
+
+	tests := []struct {
+		name       string
+		obj        client.Object
+		expected   int
+		metric     *Metrics
+		metricName string
+		collector  prometheus.Collector
+	}{
+		{
+			name:       "suspended metric is enabled",
+			obj:        &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"}},
+			expected:   0,
+			metric:     metrics,
+			metricName: "achilles_object_suspended",
+			collector:  metrics.sink.suspendGauge,
+		},
+		{
+			name:       "suspended metric is disabled",
+			obj:        &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"}},
+			expected:   0,
+			metric:     metricsDisabled,
+			metricName: "achilles_object_suspended",
+			collector:  metricsDisabled.sink.suspendGauge,
+		},
+	}
+
+	for _, tt := range tests {
+		runTest(t, tt.name, tt.expected, tt.metricName, tt.collector, func() {
+			tt.metric.RecordSuspend(tt.obj, true)
+			tt.metric.DeleteSuspend(tt.obj)
+		})
+	}
+}
+
 func TestRecordStateDuration(t *testing.T) {
 	metrics := MustMakeMetrics(scheme, prometheus.NewRegistry())
 	metricsDisabled := MustMakeMetricsWithOptions(scheme, prometheus.NewRegistry(), types.MetricsOptions{DisableMetrics: []types.AchillesMetrics{types.AchillesStateDuration}})
