@@ -130,9 +130,10 @@ Which means the prefix is an invariant, not a label:
 Getting the first wrong **fails silently**. Each instance claims its own uncontended Lease, so two
 instances configured with the same value both believe they own it and both reconcile its objects —
 the double reconciliation the Lease exists to prevent, with no contention to show for it. Nothing
-reports it: `achilles_shard_values_contested` stays at `0` precisely because there is no contention.
-Pin the prefix once per controller where the overlays cannot drift apart, and assert it over the
-rendered manifests.
+`achilles_shard_values_contested` stays at `0` precisely because there is no contention. Pin the
+prefix once per controller where the overlays cannot drift apart, and assert it over the rendered
+manifests. `achilles_shard_values_ignored` does catch it once objects carry the value — see
+[Failure modes to alert on](#failure-modes-to-alert-on).
 
 There is deliberately no default. The SDK could derive one from the instance name, but that is
 per-Deployment, which is exactly the thing that must *not* vary between instances of one controller.
@@ -319,9 +320,64 @@ and expose the SHA separately in a log line or metric.
 | Two instances given one value | `achilles_shard_values_contested > 0` | Overlapping `--shard-values`. Safe, but the assignment is arbitrary. |
 | An instance holds nothing | `achilles_shard_values_held == 0` | Its values are all held elsewhere, or it has not synced. |
 
-A mismatched `--shard-lease-prefix` is absent from this table because it is unalertable: there is no
-contention to observe. Guard it in the manifests instead — see [Naming the
-Leases](#naming-the-leases).
+`achilles_shard_values_contested` only sees instances contending for *one* Lease, so it reads `0`
+when two instances serve a value under mismatched `--shard-lease-prefix` values — the case where both
+actually reconcile its objects. `achilles_shard_values_ignored` catches that one too, because both
+instances report the value as served regardless of which Lease they name:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: achilles-shard-double-ownership
+  # The namespace holding the controller's Deployments.
+  namespace: achilles-application-controller
+spec:
+  groups:
+    - name: sharding
+      rules:
+        - alert: ShardValueServedByTwoInstances
+          annotations:
+            summary: >-
+              Shard value "{{ $labels.value }}" is served by more than one Deployment in
+              namespace {{ $labels.namespace }}
+            description: >-
+              Two or more Deployments of one sharded controller are configured with shard value
+              "{{ $labels.value }}". Given one --shard-lease-prefix the Lease makes this safe but
+              arbitrary; given different ones both instances reconcile the value's objects and
+              overwrite each other. Compare --shard-values and --shard-lease-prefix across the
+              Deployments.
+          labels:
+            severity: warning
+            salon: '#your-team-channel'
+          expr: |
+            count by (namespace, value) (
+              max by (namespace, exported_instance, value) (
+                achilles_shard_values_ignored{
+                  namespace="achilles-application-controller",
+                  exported_instance=~"application-controller-workload-.*"
+                } == 0
+              )
+            ) > 1
+          for: 10m
+```
+
+Three things to adjust, and one to know:
+
+- **Both matchers are required.** Scope the rule to one controller's Deployments, or two unrelated
+  sharded controllers sharing a namespace both serving value `0` — for different object sets, quite
+  correctly — will trip it.
+- **`exported_instance`, not `instance`.** Prometheus already owns `instance` as the scrape target's
+  address, so with the default `honorLabels: false` it renames ours. Use `instance` only if your
+  ServiceMonitor sets `honorLabels: true`.
+- **`max by (...)` collapses replicas** before counting, so a leader handover mid-scrape — briefly
+  two pods publishing one instance's series — does not read as two instances.
+- **It fires only once objects carry the value**, since only values in use are reported. The
+  misconfiguration exists before that, which is why the manifests should also pin the prefix — see
+  [Naming the Leases](#naming-the-leases).
+
+For Flux-managed manifests, escape the templates as `{{ $$labels.value }}`: post-build substitution
+consumes a single `$`.
 
 ## Requirements
 
