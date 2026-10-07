@@ -247,7 +247,8 @@ func (a *APIApplicator) createNewObject(ctx context.Context, obj client.Object, 
 }
 
 // ApplyStatus updates the object's status subresource. If the object does not exist, an
-// error will be returned.
+// error will be returned. WithOptimisticLock preserves the supplied resource version
+// as a write precondition. Successful writes refresh o's resource version; no-ops do not.
 func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts ...ApplyOption) error {
 	m, ok := o.(metav1.Object)
 	if !ok {
@@ -300,9 +301,13 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 	// copy fields from server data needed for generating a correct patch
 	desired.(metav1.Object).SetUID(current.(metav1.Object).GetUID())
 
-	// ignore optimistic resource lock
-	// TODO should we add option to enforce optimistic lock?
-	desired.SetResourceVersion("")
+	if err := validateOptimisticLock(requestOpts, desired); err != nil {
+		return fmt.Errorf("applying optimistic lock: %w", err)
+	}
+	if !requestOpts.EnforceOptimisticLock {
+		// Preserve the existing unlocked patch and update behavior.
+		desired.SetResourceVersion("")
+	}
 
 	if requestOpts.Update {
 		// update
@@ -314,15 +319,13 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 		if err = a.client.Status().Update(ctx, desired); err != nil {
 			return fmt.Errorf("cannot update object status: %w", err)
 		}
+		o.SetResourceVersion(desired.GetResourceVersion())
 	} else {
 		// patch
-		if !requestOpts.EnforceOptimisticLock {
-			// ignore optimistic resource lock if `WithOptimisticLock` wasn't specified
-			desired.SetResourceVersion("")
-		}
 		if err = a.client.Status().Patch(ctx, current, &patch{from: desired}); err != nil {
 			return fmt.Errorf("cannot patch object status: %w", err)
 		}
+		o.SetResourceVersion(current.GetResourceVersion())
 	}
 
 	return nil
