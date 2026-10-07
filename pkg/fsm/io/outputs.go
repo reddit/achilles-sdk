@@ -61,7 +61,6 @@ func applyManagedResourceRefs[T any, Obj apitypes.FSMResource[T]](
 	copy := Obj(new(T))
 	copy.SetName(obj.GetName())
 	copy.SetNamespace(obj.GetNamespace())
-	copy.SetResourceVersion(obj.GetResourceVersion())
 
 	newRefs := outputSet.GetApplied().DeepCopy()
 	deleted := outputSet.GetDeleted()
@@ -106,14 +105,12 @@ func applyManagedResourceRefs[T any, Obj apitypes.FSMResource[T]](
 	}
 	copy.SetManagedResources(refs)
 
-	if err := c.ApplyStatus(ctx, copy, io.WithOptimisticLock()); err != nil {
+	if err := c.ApplyStatus(ctx, copy); err != nil {
 		return fmt.Errorf("applying status resourceRefs: %w", err)
 	}
 
 	// update in-memory obj
 	obj.SetManagedResources(refs)
-	// Carry the successful write's version into subsequent states and the final status write.
-	obj.SetResourceVersion(copy.GetResourceVersion())
 	return nil
 }
 
