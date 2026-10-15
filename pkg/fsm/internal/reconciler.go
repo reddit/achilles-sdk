@@ -100,6 +100,9 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	switch ownership {
 	case shard.NotManaged:
+		// Debug, like its neighbours: on a sharded fleet every instance reaches this for every
+		// object it does not serve, so anything louder is most of the log.
+		log.Debug("skipping reconcile: this object's shard value is not served here")
 		return ctrl.Result{}, nil
 	case shard.Pending:
 		log.Debug("deferring reconcile until this object's shard value is held")

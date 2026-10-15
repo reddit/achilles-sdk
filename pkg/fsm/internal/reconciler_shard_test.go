@@ -7,7 +7,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -58,6 +61,17 @@ func shardedContext(t *testing.T, claim bool) context.Context {
 func shardedReconciler(t *testing.T, obj *testv1alpha1.TestClaim) (*fsmReconciler[testv1alpha1.TestClaim, *testv1alpha1.TestClaim], client.Client) {
 	t.Helper()
 
+	r, c, _ := shardedReconcilerWithLogs(t, obj)
+	return r, c
+}
+
+// shardedReconcilerWithLogs is shardedReconciler plus its log output, for asserting that a path
+// which does nothing still says why. Teed so a failing test still prints through zaptest.
+func shardedReconcilerWithLogs(t *testing.T, obj *testv1alpha1.TestClaim) (
+	*fsmReconciler[testv1alpha1.TestClaim, *testv1alpha1.TestClaim], client.Client, *observer.ObservedLogs,
+) {
+	t.Helper()
+
 	apiClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj).WithStatusSubresource(obj).Build()
 	c := &io.ClientApplicator{
 		Client:     apiClient,
@@ -75,11 +89,14 @@ func shardedReconciler(t *testing.T, obj *testv1alpha1.TestClaim) (*fsmReconcile
 		},
 	}
 
+	core, logs := observer.New(zapcore.DebugLevel)
+	log := zap.New(zapcore.NewTee(zaptest.NewLogger(t).Core(), core)).Sugar()
+
 	r := NewFSMReconciler[testv1alpha1.TestClaim, *testv1alpha1.TestClaim](
-		"test", zaptest.NewLogger(t).Sugar(), c, scheme, state, nil, nil, m,
+		"test", log, c, scheme, state, nil, nil, m,
 		types.ReconcilerOptions[testv1alpha1.TestClaim, *testv1alpha1.TestClaim]{},
 	)
-	return r, apiClient
+	return r, apiClient, logs
 }
 
 func claimWithValue(value string) *testv1alpha1.TestClaim {
@@ -123,6 +140,21 @@ func TestReconcileLeavesObjectsOfOtherShardsUntouched(t *testing.T) {
 			assert.NotContains(t, conditionTypes(t, c, obj), reconciledCondition)
 		})
 	}
+}
+
+// Skipping happens between "entering reconcile" and "finished reconcile", both of which log. Without
+// a line of its own the debug log shows a reconcile that did nothing and does not say why — and on a
+// sharded fleet most reconciles are this one.
+func TestReconcileSaysWhyItSkippedAnotherShardsObject(t *testing.T) {
+	obj := claimWithValue("b")
+	r, _, logs := shardedReconcilerWithLogs(t, obj)
+
+	_, err := r.Reconcile(shardedContext(t, true), reconcile.Request{
+		NamespacedName: client.ObjectKeyFromObject(obj),
+	})
+
+	require.NoError(t, err)
+	assert.Len(t, logs.FilterMessage("skipping reconcile: this object's shard value is not served here").All(), 1)
 }
 
 func TestReconcileProceedsForAClaimedValue(t *testing.T) {
