@@ -76,6 +76,7 @@ func WithoutOwnerRefs() ApplyOption {
 
 // WithOptimisticLock requires the desired object to include a resource version when patching
 // or updating an existing object. The check is deferred until apply time so creates are not blocked.
+// With ApplyStatus, the write fails with a conflict if the object has changed since that resource version.
 func WithOptimisticLock() ApplyOption {
 	return requestOption(func(requestOpts *RequestOptions) error {
 		requestOpts.EnforceOptimisticLock = true
