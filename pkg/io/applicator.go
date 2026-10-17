@@ -207,7 +207,7 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 }
 
 // prepareServerSideApply validates the request options and prepares desired as an SSA body: it sets apiVersion
-// and kind, and strips managedFields and, unless the optimistic lock is enforced, the resourceVersion.
+// and kind, strips managedFields, and unless the optimistic lock is enforced, strips the resourceVersion.
 func (a *APIApplicator) prepareServerSideApply(desired client.Object, requestOpts *RequestOptions) error {
 	if requestOpts.Update {
 		return fmt.Errorf("AsUpdate and AsServerSideApply are mutually exclusive")
