@@ -206,21 +206,39 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	return nil
 }
 
-// serverSideApply performs a server-side apply PATCH on the given object.
-// It strips metadata fields that must not be present in an SSA body and sends
-// the request with the configured FieldOwner (and optionally ForceOwnership).
-func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Object, requestOpts *RequestOptions) error {
-	// SSA requires apiVersion and kind in the patch body.
-	// DeepCopy often produces objects with empty TypeMeta, so populate it explicitly.
+// prepareServerSideApply validates the request options and prepares desired as an SSA body: it sets apiVersion
+// and kind, and strips managedFields and, unless the optimistic lock is enforced, the resourceVersion.
+func (a *APIApplicator) prepareServerSideApply(desired client.Object, requestOpts *RequestOptions) error {
 	if requestOpts.Update {
 		return fmt.Errorf("AsUpdate and AsServerSideApply are mutually exclusive")
 	}
+	// SSA requires apiVersion and kind in the patch body.
+	// DeepCopy often produces objects with empty TypeMeta, so populate it explicitly.
 	if desired.GetObjectKind().GroupVersionKind().Empty() {
 		gvk, err := a.client.GroupVersionKindFor(desired)
 		if err != nil {
 			return fmt.Errorf("getting GVK for server-side apply: %w", err)
 		}
 		desired.GetObjectKind().SetGroupVersionKind(gvk)
+	}
+
+	// Objects read from the apiserver carry managedFields, which an object using SSA must not include.
+	desired.SetManagedFields(nil)
+	if err := validateOptimisticLock(requestOpts, desired); err != nil {
+		return fmt.Errorf("applying optimistic lock: %w", err)
+	}
+	if !requestOpts.EnforceOptimisticLock {
+		// ignore optimistic resource lock if `WithOptimisticLock` wasn't specified
+		desired.SetResourceVersion("")
+	}
+	return nil
+}
+
+// serverSideApply performs a server-side apply PATCH on the given object.
+// It sends the request with the configured FieldOwner (and optionally ForceOwnership).
+func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Object, requestOpts *RequestOptions) error {
+	if err := a.prepareServerSideApply(desired, requestOpts); err != nil {
+		return err
 	}
 
 	patchOpts := []client.PatchOption{client.FieldOwner(requestOpts.FieldManager)}
@@ -230,6 +248,24 @@ func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Obje
 
 	if err := a.client.Patch(ctx, desired, client.Apply, patchOpts...); err != nil {
 		return fmt.Errorf("cannot server-side apply object: %w", err)
+	}
+	return nil
+}
+
+// serverSideApplyStatus performs a server-side apply PATCH on the given object's status subresource.
+// It sends the request with the configured FieldOwner (and optionally ForceOwnership).
+func (a *APIApplicator) serverSideApplyStatus(ctx context.Context, desired client.Object, requestOpts *RequestOptions) error {
+	if err := a.prepareServerSideApply(desired, requestOpts); err != nil {
+		return err
+	}
+
+	patchOpts := []client.SubResourcePatchOption{client.FieldOwner(requestOpts.FieldManager)}
+	if requestOpts.ForceOwnership {
+		patchOpts = append(patchOpts, client.ForceOwnership)
+	}
+
+	if err := a.client.Status().Patch(ctx, desired, client.Apply, patchOpts...); err != nil {
+		return fmt.Errorf("cannot server-side apply object status: %w", err)
 	}
 	return nil
 }
@@ -261,6 +297,15 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 
 	current := o.DeepCopyObject().(client.Object) // copy so original object isn't mutated by patch
 	desired := o.DeepCopyObject().(client.Object)
+
+	// Server-side apply mutates desired and bypasses the Get and diff loop.
+	// The apiserver returns NotFound if the object doesn't exist.
+	if requestOpts.ServerSideApply {
+		if err := applyObjectOptions(ctx, desired, requestOpts, opts); err != nil {
+			return fmt.Errorf("applying object options: %w", err)
+		}
+		return a.serverSideApplyStatus(ctx, desired, requestOpts)
+	}
 
 	err := a.client.Get(ctx, types.NamespacedName{Name: m.GetName(), Namespace: m.GetNamespace()}, current)
 	if kerrors.IsNotFound(err) {

@@ -92,11 +92,14 @@ func AsUpdate() ApplyOption {
 	})
 }
 
-// AsServerSideApply causes Apply (and ApplyStatus) to use server-side apply (PATCH with ApplyPatchType)
-// instead of the default JSON merge patch. fieldManager is the name recorded in managedFields to track
-// which fields this caller owns. Use this when multiple controllers manage different fields of the same
-// resource — the apiserver will enforce that two managers cannot own the same field without an explicit
-// conflict resolution.
+// AsServerSideApply causes Apply (and ApplyStatus, against the status subresource) to use server-side apply
+// (PATCH with ApplyPatchType) instead of the default JSON merge patch. fieldManager is the name recorded in
+// managedFields to track which fields this caller owns. Use this when multiple controllers manage different
+// fields of the same resource — the apiserver will enforce that two managers cannot own the same field without
+// an explicit conflict resolution.
+//
+// The object's own managedFields are dropped from the apply body. The resourceVersion is also dropped
+// unless WithOptimisticLock is set, in which case it's sent as a precondition.
 //
 // Cannot be combined with AsUpdate. May be combined with WithForceOwnership to claim fields
 // currently owned by another manager.
