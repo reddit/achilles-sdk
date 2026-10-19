@@ -49,14 +49,15 @@ func (c *FilteringClient) Update(ctx context.Context, obj client.Object, opts ..
 }
 
 func (c *FilteringClient) Status() client.SubResourceWriter {
-	return &filteringSubResourceClient{client: c.SubResource("status")}
+	return &filteringSubResourceClient{SubResourceClient: c.SubResource("status")}
 }
 
-// ensure dryRunSubResourceWriter implements client.SubResourceWriter.
-var _ client.SubResourceWriter = &filteringSubResourceClient{}
+// ensure filteringSubResourceClient implements client.SubResourceClient.
+var _ client.SubResourceClient = &filteringSubResourceClient{}
 
 type filteringSubResourceClient struct {
-	client  client.SubResourceClient
+	// Forward additional subresource methods introduced by newer client versions.
+	client.SubResourceClient
 	filters []ClientFilter
 }
 
@@ -67,7 +68,7 @@ func (c *filteringSubResourceClient) Get(ctx context.Context, obj, subResource c
 		}
 	}
 
-	return c.client.Get(ctx, obj, subResource, opts...)
+	return c.SubResourceClient.Get(ctx, obj, subResource, opts...)
 }
 
 func (c *filteringSubResourceClient) Create(ctx context.Context, obj, subResource client.Object, opts ...client.SubResourceCreateOption) error {
@@ -77,7 +78,7 @@ func (c *filteringSubResourceClient) Create(ctx context.Context, obj, subResourc
 		}
 	}
 
-	return c.client.Create(ctx, obj, subResource, opts...)
+	return c.SubResourceClient.Create(ctx, obj, subResource, opts...)
 }
 
 func (c *filteringSubResourceClient) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
@@ -87,7 +88,7 @@ func (c *filteringSubResourceClient) Update(ctx context.Context, obj client.Obje
 		}
 	}
 
-	return c.client.Update(ctx, obj, opts...)
+	return c.SubResourceClient.Update(ctx, obj, opts...)
 }
 
 func (c *filteringSubResourceClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
@@ -97,5 +98,5 @@ func (c *filteringSubResourceClient) Patch(ctx context.Context, obj client.Objec
 		}
 	}
 
-	return c.client.Patch(ctx, obj, patch, opts...)
+	return c.SubResourceClient.Patch(ctx, obj, patch, opts...)
 }

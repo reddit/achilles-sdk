@@ -2051,7 +2051,7 @@ func TestUnmarshalUnexported(t *testing.T) {
 		t.Errorf("got error %v, expected nil", err)
 	}
 	if !reflect.DeepEqual(out, want) {
-		t.Errorf("got %q, want %q", out, want)
+		t.Errorf("got %#v, want %#v", out, want)
 	}
 }
 

@@ -326,7 +326,7 @@ func readManagedResources(
 		gvk := res.GroupVersionKind()
 		managedObj, err := meta.NewObjectForGVK(scheme, gvk)
 		if err != nil {
-			return nil, fmt.Errorf("constructing new %T %s: %w", managedObj, client.ObjectKeyFromObject(managedObj), err)
+			return nil, fmt.Errorf("constructing managed resource %s: %w", res.GroupVersionKind(), err)
 		}
 
 		if err := c.Get(ctx, res.ObjectKey(), managedObj); err != nil {
