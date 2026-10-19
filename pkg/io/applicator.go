@@ -300,26 +300,27 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 	// copy fields from server data needed for generating a correct patch
 	desired.(metav1.Object).SetUID(current.(metav1.Object).GetUID())
 
-	// ignore optimistic resource lock
-	// TODO should we add option to enforce optimistic lock?
-	desired.SetResourceVersion("")
+	// optimistic lock sends the caller's resource version as-is, so the write fails with a conflict if the object changed
+	// after the caller read it.
+	if err := validateOptimisticLock(requestOpts, desired); err != nil {
+		return fmt.Errorf("applying optimistic lock: %w", err)
+	}
+
+	// without `WithOptimisticLock`, ignore resource version
+	// updates must include a version, so use the server's current version. patches can omit it.
+	if !requestOpts.EnforceOptimisticLock {
+		resourceVersion := ""
+		if requestOpts.Update {
+			resourceVersion = current.GetResourceVersion()
+		}
+		desired.SetResourceVersion(resourceVersion)
+	}
 
 	if requestOpts.Update {
-		// update
-		// automatically set resource version if not supplied by caller
-		if desired.GetResourceVersion() == "" {
-			desired.SetResourceVersion(current.GetResourceVersion())
-		}
-
 		if err = a.client.Status().Update(ctx, desired); err != nil {
 			return fmt.Errorf("cannot update object status: %w", err)
 		}
 	} else {
-		// patch
-		if !requestOpts.EnforceOptimisticLock {
-			// ignore optimistic resource lock if `WithOptimisticLock` wasn't specified
-			desired.SetResourceVersion("")
-		}
 		if err = a.client.Status().Patch(ctx, current, &patch{from: desired}); err != nil {
 			return fmt.Errorf("cannot patch object status: %w", err)
 		}
