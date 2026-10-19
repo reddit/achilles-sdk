@@ -518,6 +518,69 @@ var _ = Describe("Applicator", func() {
 			}).Should(Succeed())
 		})
 
+		By("enforcing optimistic lock on status", func() {
+			// empty resource version in patch should cause error
+			svcPatch := svc.DeepCopy()
+			svcPatch.SetResourceVersion("")
+
+			Expect(applicator.ApplyStatus(ctx, svcPatch, io.WithOptimisticLock())).To(MatchError(io.ResourceVersionMissing{}))
+		})
+
+		By("patching status with a stale resource version and optimistic lock returns a conflict error", func() {
+			svcPatch := svc.DeepCopy()
+			svcPatch.SetResourceVersion("1")
+			svcPatch.Status.Conditions = append(svcPatch.Status.Conditions, metav1.Condition{
+				Type:   "type4",
+				Reason: "message4",
+			})
+
+			err := applicator.ApplyStatus(ctx, svcPatch, io.WithOptimisticLock())
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsConflict(err)).To(BeTrue(), "expected a conflict error but got: %v", err)
+		})
+
+		By("patching status with optimistic lock", func() {
+			// update svc to latest state
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), svc)).To(Succeed())
+
+			svcPatch := svc.DeepCopy()
+			svcPatch.Status.Conditions = append(svcPatch.Status.Conditions, metav1.Condition{
+				Type:   "type4",
+				Reason: "message4",
+			})
+
+			expectedSvc := svcPatch.DeepCopy()
+
+			Expect(applicator.ApplyStatus(ctx, svcPatch, io.WithOptimisticLock())).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := svc.DeepCopy()
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
+				g.Expect(actual.Status).To(Equal(expectedSvc.Status))
+			}).Should(Succeed())
+		})
+
+		By("updating status with optimistic lock", func() {
+			// update svc to latest state
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), svc)).To(Succeed())
+
+			svcPatch := svc.DeepCopy()
+			svcPatch.Status.Conditions = append(svcPatch.Status.Conditions, metav1.Condition{
+				Type:   "type5",
+				Reason: "message5",
+			})
+
+			expectedSvc := svcPatch.DeepCopy()
+
+			Expect(applicator.ApplyStatus(ctx, svcPatch, io.WithOptimisticLock(), io.AsUpdate())).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := svc.DeepCopy()
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(actual), actual)).To(Succeed())
+				g.Expect(actual.Status).To(Equal(expectedSvc.Status))
+			}).Should(Succeed())
+		})
+
 		By("failing to update status if it's not a subresource", func() {
 			Expect(c.Get(ctx, client.ObjectKeyFromObject(testResourceNoSubresource), testResourceNoSubresource)).To(Succeed())
 			Expect(testResourceNoSubresource.Status).To(BeComparableTo(v1alpha1.TestResourceWithoutSubresourceStatus{
