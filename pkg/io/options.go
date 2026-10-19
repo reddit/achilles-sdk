@@ -109,6 +109,9 @@ func AsUpdate() ApplyOption {
 //   - Fields with the `omitempty` JSON tag whose Go value is the zero value (e.g. 0, "", false) will be
 //     omitted from the JSON body and will NOT be set to zero — they will instead release ownership.
 //     Use pointer types (*int, *string, etc.) for fields you need to explicitly zero via SSA.
+//   - WithOptimisticLock is bypassed for creations, as they have no resource version. A `Get` before
+//     the apply checks whether the object exists, so an object created concurrently by another caller
+//     may be updated without a precondition.
 func AsServerSideApply(fieldManager string) ApplyOption {
 	return requestOption(func(requestOpts *RequestOptions) error {
 		if fieldManager == "" {

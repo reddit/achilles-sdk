@@ -237,6 +237,19 @@ func (a *APIApplicator) prepareServerSideApply(desired client.Object, requestOpt
 // serverSideApply performs a server-side apply PATCH on the given object.
 // It sends the request with the configured FieldOwner (and optionally ForceOwnership).
 func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Object, requestOpts *RequestOptions) error {
+	// SSA can't tell a create from an update, so check whether the object exists and bypass the optimistic lock
+	// if it doesn't. If another caller creates the object after this Get, the apply updates it without a precondition.
+	if requestOpts.EnforceOptimisticLock && desired.GetResourceVersion() == "" {
+		existing := desired.DeepCopyObject().(client.Object)
+		err := a.client.Get(ctx, types.NamespacedName{Name: desired.GetName(), Namespace: desired.GetNamespace()}, existing)
+		if err == nil {
+			return fmt.Errorf("applying optimistic lock: %w", ResourceVersionMissing{})
+		} else if !kerrors.IsNotFound(err) {
+			return fmt.Errorf("cannot get object: %w", err)
+		}
+		requestOpts.EnforceOptimisticLock = false
+	}
+
 	if err := a.prepareServerSideApply(desired, requestOpts); err != nil {
 		return err
 	}

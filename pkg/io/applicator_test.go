@@ -648,6 +648,37 @@ var _ = Describe("Applicator", func() {
 			Expect(errors.IsConflict(err)).To(BeTrue(), "expected a conflict error but got: %v", err)
 		})
 
+		By("creating a new object via SSA with WithOptimisticLock succeeds", func() {
+			svcNew := svc.DeepCopy()
+			svcNew.SetName("svc-ssa-optimistic-lock")
+			Expect(applicator.Apply(ctx, svcNew, io.AsServerSideApply("test-manager"), io.WithOptimisticLock())).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svcNew), actual)).To(Succeed())
+				g.Expect(actual.Spec.ExternalIPs).To(Equal([]string{"1.1.1.1"}))
+				var found bool
+				for _, mf := range actual.GetManagedFields() {
+					if mf.Manager == "test-manager" && string(mf.Operation) == "Apply" {
+						found = true
+						break
+					}
+				}
+				g.Expect(found).To(BeTrue(), "expected managedFields entry for test-manager with Apply operation")
+			}).Should(Succeed())
+		})
+
+		By("applying an existing object via SSA with WithOptimisticLock and no resourceVersion returns a missing resource version error", func() {
+			svcB := svc.DeepCopy()
+			svcB.Spec.ExternalIPs = []string{"6.6.6.6"}
+			Expect(applicator.Apply(ctx, svcB, io.AsServerSideApply("manager-b"), io.WithOptimisticLock())).
+				To(MatchError(io.ResourceVersionMissing{}))
+
+			// status subresource
+			Expect(applicator.ApplyStatus(ctx, svc.DeepCopy(), io.AsServerSideApply("status-manager-a"), io.WithOptimisticLock())).
+				To(MatchError(io.ResourceVersionMissing{}))
+		})
+
 		By("applying status via SSA sets the status and adds a managed fields entry", func() {
 			// read from the apiserver, so the object carries managedFields and a resourceVersion
 			svcA := &corev1.Service{}
