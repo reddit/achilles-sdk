@@ -686,14 +686,156 @@ var _ = Describe("Applicator", func() {
 			}).Should(Succeed())
 		})
 
+		By("applying an object read from the apiserver via SSA ignores its managedFields and resourceVersion", func() {
+			// read from the apiserver, so the object carries managedFields and a resourceVersion
+			svcB := &corev1.Service{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), svcB)).To(Succeed())
+			svcB.Spec.ExternalIPs = []string{"4.4.4.4"}
+			svcB.SetResourceVersion("1") // stale
+			Expect(applicator.Apply(ctx, svcB, io.AsServerSideApply("manager-b"))).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), actual)).To(Succeed())
+				g.Expect(actual.Spec.ExternalIPs).To(Equal([]string{"4.4.4.4"}))
+			}).Should(Succeed())
+		})
+
+		By("applying a stale resourceVersion via SSA with WithOptimisticLock returns a conflict error", func() {
+			svcB := &corev1.Service{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), svcB)).To(Succeed())
+			svcB.Spec.ExternalIPs = []string{"5.5.5.5"}
+			svcB.SetResourceVersion("1") // stale
+			err := applicator.Apply(ctx, svcB, io.AsServerSideApply("manager-b"), io.WithOptimisticLock())
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsConflict(err)).To(BeTrue(), "expected a conflict error but got: %v", err)
+		})
+
+		By("creating a new object via SSA with WithOptimisticLock succeeds", func() {
+			svcNew := svc.DeepCopy()
+			svcNew.SetName("svc-ssa-optimistic-lock")
+			Expect(applicator.Apply(ctx, svcNew, io.AsServerSideApply("test-manager"), io.WithOptimisticLock())).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svcNew), actual)).To(Succeed())
+				g.Expect(actual.Spec.ExternalIPs).To(Equal([]string{"1.1.1.1"}))
+				var found bool
+				for _, mf := range actual.GetManagedFields() {
+					if mf.Manager == "test-manager" && string(mf.Operation) == "Apply" {
+						found = true
+						break
+					}
+				}
+				g.Expect(found).To(BeTrue(), "expected managedFields entry for test-manager with Apply operation")
+			}).Should(Succeed())
+		})
+
+		By("applying an existing object via SSA with WithOptimisticLock and no resourceVersion returns a missing resource version error", func() {
+			svcB := svc.DeepCopy()
+			svcB.Spec.ExternalIPs = []string{"6.6.6.6"}
+			Expect(applicator.Apply(ctx, svcB, io.AsServerSideApply("manager-b"), io.WithOptimisticLock())).
+				To(MatchError(io.ResourceVersionMissing{}))
+
+			// status subresource
+			Expect(applicator.ApplyStatus(ctx, svc.DeepCopy(), io.AsServerSideApply("status-manager-a"), io.WithOptimisticLock())).
+				To(MatchError(io.ResourceVersionMissing{}))
+		})
+
+		By("applying status via SSA sets the status and adds a managed fields entry", func() {
+			// read from the apiserver, so the object carries managedFields and a resourceVersion
+			svcA := &corev1.Service{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), svcA)).To(Succeed())
+			svcA.Status.Conditions = []metav1.Condition{
+				{
+					Type:   "type-a",
+					Reason: "message-a",
+				},
+			}
+
+			expectedSvc := svcA.DeepCopy()
+
+			Expect(applicator.ApplyStatus(ctx, svcA, io.AsServerSideApply("status-manager-a"))).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), actual)).To(Succeed())
+				g.Expect(actual.Status).To(Equal(expectedSvc.Status))
+				var found bool
+				for _, mf := range actual.GetManagedFields() {
+					if mf.Manager == "status-manager-a" && string(mf.Operation) == "Apply" {
+						found = true
+						break
+					}
+				}
+				g.Expect(found).To(BeTrue(), "expected managedFields entry for status-manager-a with Apply operation")
+			}).Should(Succeed())
+		})
+
+		By("applying status via SSA from a second manager keeps the first manager's fields", func() {
+			svcB := &corev1.Service{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), svcB)).To(Succeed())
+			svcB.Status.Conditions = []metav1.Condition{
+				{
+					Type:   "type-b",
+					Reason: "message-b",
+				},
+			}
+
+			Expect(applicator.ApplyStatus(ctx, svcB, io.AsServerSideApply("status-manager-b"))).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), actual)).To(Succeed())
+				g.Expect(actual.Status.Conditions).To(Equal([]metav1.Condition{
+					{
+						Type:   "type-a",
+						Reason: "message-a",
+					},
+					{
+						Type:   "type-b",
+						Reason: "message-b",
+					},
+				}))
+			}).Should(Succeed())
+		})
+
+		By("applying status via SSA without a field removes only that manager's field", func() {
+			svcA := &corev1.Service{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), svcA)).To(Succeed())
+			svcA.Status.Conditions = nil
+
+			Expect(applicator.ApplyStatus(ctx, svcA, io.AsServerSideApply("status-manager-a"))).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				actual := &corev1.Service{}
+				g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), actual)).To(Succeed())
+				g.Expect(actual.Status.Conditions).To(Equal([]metav1.Condition{
+					{
+						Type:   "type-b",
+						Reason: "message-b",
+					},
+				}))
+			}).Should(Succeed())
+		})
+
 		By("combining AsServerSideApply with AsUpdate returns a mutual exclusion error", func() {
 			err := applicator.Apply(ctx, svc.DeepCopy(), io.AsServerSideApply("test-manager"), io.AsUpdate())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("mutually exclusive"))
+
+			// status subresource
+			err = applicator.ApplyStatus(ctx, svc.DeepCopy(), io.AsServerSideApply("test-manager"), io.AsUpdate())
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("mutually exclusive"))
 		})
 
 		By("AsServerSideApply with an empty fieldManager returns an error", func() {
 			err := applicator.Apply(ctx, svc.DeepCopy(), io.AsServerSideApply(""))
+			Expect(err).To(HaveOccurred())
+
+			// status subresource
+			err = applicator.ApplyStatus(ctx, svc.DeepCopy(), io.AsServerSideApply(""))
 			Expect(err).To(HaveOccurred())
 		})
 	})
