@@ -296,7 +296,8 @@ func (a *APIApplicator) createNewObject(ctx context.Context, obj client.Object, 
 }
 
 // ApplyStatus updates the object's status subresource. If the object does not exist, an
-// error will be returned.
+// error will be returned. WithOptimisticLock preserves the supplied resource version
+// as a write precondition. Successful writes refresh o's resource version; no-ops do not.
 func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts ...ApplyOption) error {
 	m, ok := o.(metav1.Object)
 	if !ok {
@@ -378,10 +379,12 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 		if err = a.client.Status().Update(ctx, desired); err != nil {
 			return fmt.Errorf("cannot update object status: %w", err)
 		}
+		o.SetResourceVersion(desired.GetResourceVersion())
 	} else {
 		if err = a.client.Status().Patch(ctx, current, &patch{from: desired}); err != nil {
 			return fmt.Errorf("cannot patch object status: %w", err)
 		}
+		o.SetResourceVersion(current.GetResourceVersion())
 	}
 
 	return nil
