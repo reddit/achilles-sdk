@@ -19,6 +19,7 @@ import (
 	apitypes "github.com/reddit/achilles-sdk-api/pkg/types"
 	"github.com/reddit/achilles-sdk/pkg/io"
 	"github.com/reddit/achilles-sdk/pkg/meta"
+	"github.com/reddit/achilles-sdk/pkg/shard"
 	"github.com/reddit/achilles-sdk/pkg/status"
 )
 
@@ -56,6 +57,15 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 		return ctrl.Result{}, nil
 	} else if err != nil {
 		return ctrl.Result{}, fmt.Errorf("fetching %T %q: %w", claim, req.NamespacedName, err)
+	}
+
+	// Resolved before the claimed resource is named: every instance is notified of every claim, and
+	// an instance acting on one it does not own would bind a second resource to it.
+	switch shard.Check(ctx, claim) {
+	case shard.NotManaged:
+		return ctrl.Result{}, nil
+	case shard.Pending:
+		return ctrl.Result{RequeueAfter: shard.PendingRequeueInterval}, nil
 	}
 
 	claimed := Claimed(new(T))
@@ -161,6 +171,7 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 
 	// ensure the state of the claimed resource
 	meta.SetRedditLabels(claimed, r.Name)
+	shard.Propagate(claim, claimed)
 	claimed.SetClaimRef(claimRef)
 
 	// update operation is needed to ensure suspend label is deleted from claimed object
