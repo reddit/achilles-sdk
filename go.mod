@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.8
 
 require (
-	github.com/fgrosse/zaptest v1.2.1
+	github.com/fgrosse/zaptest v1.3.1
 	github.com/go-logr/zapr v1.3.0
 	github.com/gobuffalo/flect v1.0.3
 	github.com/google/btree v1.1.3
