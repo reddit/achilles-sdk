@@ -74,8 +74,9 @@ func WithoutOwnerRefs() ApplyOption {
 	})
 }
 
-// WithOptimisticLock requires the desired object to include a resource version when patching
-// or updating an existing object. The check is deferred until apply time so creates are not blocked.
+// WithOptimisticLock sends the desired object's resource version with the write, so patching or updating an
+// existing object fails with a conflict if it has changed since that resource version. The desired object must
+// include a resource version. The check is deferred until apply time so creates are not blocked.
 func WithOptimisticLock() ApplyOption {
 	return requestOption(func(requestOpts *RequestOptions) error {
 		requestOpts.EnforceOptimisticLock = true
@@ -92,11 +93,14 @@ func AsUpdate() ApplyOption {
 	})
 }
 
-// AsServerSideApply causes Apply (and ApplyStatus) to use server-side apply (PATCH with ApplyPatchType)
-// instead of the default JSON merge patch. fieldManager is the name recorded in managedFields to track
-// which fields this caller owns. Use this when multiple controllers manage different fields of the same
-// resource — the apiserver will enforce that two managers cannot own the same field without an explicit
-// conflict resolution.
+// AsServerSideApply causes Apply (and ApplyStatus, against the status subresource) to use server-side apply
+// (PATCH with ApplyPatchType) instead of the default JSON merge patch. fieldManager is the name recorded in
+// managedFields to track which fields this caller owns. Use this when multiple controllers manage different
+// fields of the same resource — the apiserver will enforce that two managers cannot own the same field without
+// an explicit conflict resolution.
+//
+// The object's own managedFields are dropped from the apply body. The resourceVersion is also dropped
+// unless WithOptimisticLock is set, in which case it's sent as a precondition.
 //
 // Cannot be combined with AsUpdate. May be combined with WithForceOwnership to claim fields
 // currently owned by another manager.
@@ -106,6 +110,9 @@ func AsUpdate() ApplyOption {
 //   - Fields with the `omitempty` JSON tag whose Go value is the zero value (e.g. 0, "", false) will be
 //     omitted from the JSON body and will NOT be set to zero — they will instead release ownership.
 //     Use pointer types (*int, *string, etc.) for fields you need to explicitly zero via SSA.
+//   - WithOptimisticLock is bypassed for creations, as they have no resource version. A `Get` before
+//     the apply checks whether the object exists, so an object created concurrently by another caller
+//     may be updated without a precondition.
 func AsServerSideApply(fieldManager string) ApplyOption {
 	return requestOption(func(requestOpts *RequestOptions) error {
 		if fieldManager == "" {

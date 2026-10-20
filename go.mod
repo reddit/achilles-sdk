@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.8
 
 require (
-	github.com/fgrosse/zaptest v1.2.1
+	github.com/fgrosse/zaptest v1.3.1
 	github.com/go-logr/zapr v1.3.0
 	github.com/gobuffalo/flect v1.0.3
 	github.com/google/btree v1.1.3
@@ -21,7 +21,7 @@ require (
 	go.uber.org/zap v1.27.0
 	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8
 	golang.org/x/sync v0.18.0
-	golang.org/x/time v0.12.0
+	golang.org/x/time v0.16.0
 	golang.org/x/tools v0.39.0
 	k8s.io/api v0.33.4
 	k8s.io/apiextensions-apiserver v0.33.4

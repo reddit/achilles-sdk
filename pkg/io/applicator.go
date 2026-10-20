@@ -206,21 +206,52 @@ func (a *APIApplicator) Apply(ctx context.Context, current client.Object, opts .
 	return nil
 }
 
-// serverSideApply performs a server-side apply PATCH on the given object.
-// It strips metadata fields that must not be present in an SSA body and sends
-// the request with the configured FieldOwner (and optionally ForceOwnership).
-func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Object, requestOpts *RequestOptions) error {
-	// SSA requires apiVersion and kind in the patch body.
-	// DeepCopy often produces objects with empty TypeMeta, so populate it explicitly.
+// prepareServerSideApply validates the request options and prepares desired as an SSA body: it sets apiVersion
+// and kind, strips managedFields, and unless the optimistic lock is enforced, strips the resourceVersion.
+func (a *APIApplicator) prepareServerSideApply(desired client.Object, requestOpts *RequestOptions) error {
 	if requestOpts.Update {
 		return fmt.Errorf("AsUpdate and AsServerSideApply are mutually exclusive")
 	}
+	// SSA requires apiVersion and kind in the patch body.
+	// DeepCopy often produces objects with empty TypeMeta, so populate it explicitly.
 	if desired.GetObjectKind().GroupVersionKind().Empty() {
 		gvk, err := a.client.GroupVersionKindFor(desired)
 		if err != nil {
 			return fmt.Errorf("getting GVK for server-side apply: %w", err)
 		}
 		desired.GetObjectKind().SetGroupVersionKind(gvk)
+	}
+
+	// Objects read from the apiserver carry managedFields, which an object using SSA must not include.
+	desired.SetManagedFields(nil)
+	if err := validateOptimisticLock(requestOpts, desired); err != nil {
+		return fmt.Errorf("applying optimistic lock: %w", err)
+	}
+	if !requestOpts.EnforceOptimisticLock {
+		// ignore optimistic resource lock if `WithOptimisticLock` wasn't specified
+		desired.SetResourceVersion("")
+	}
+	return nil
+}
+
+// serverSideApply performs a server-side apply PATCH on the given object.
+// It sends the request with the configured FieldOwner (and optionally ForceOwnership).
+func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Object, requestOpts *RequestOptions) error {
+	// SSA can't tell a create from an update, so check whether the object exists and bypass the optimistic lock
+	// if it doesn't. If another caller creates the object after this Get, the apply updates it without a precondition.
+	if requestOpts.EnforceOptimisticLock && desired.GetResourceVersion() == "" {
+		existing := desired.DeepCopyObject().(client.Object)
+		err := a.client.Get(ctx, types.NamespacedName{Name: desired.GetName(), Namespace: desired.GetNamespace()}, existing)
+		if err == nil {
+			return fmt.Errorf("applying optimistic lock: %w", ResourceVersionMissing{})
+		} else if !kerrors.IsNotFound(err) {
+			return fmt.Errorf("cannot get object: %w", err)
+		}
+		requestOpts.EnforceOptimisticLock = false
+	}
+
+	if err := a.prepareServerSideApply(desired, requestOpts); err != nil {
+		return err
 	}
 
 	patchOpts := []client.PatchOption{client.FieldOwner(requestOpts.FieldManager)}
@@ -230,6 +261,24 @@ func (a *APIApplicator) serverSideApply(ctx context.Context, desired client.Obje
 
 	if err := a.client.Patch(ctx, desired, client.Apply, patchOpts...); err != nil {
 		return fmt.Errorf("cannot server-side apply object: %w", err)
+	}
+	return nil
+}
+
+// serverSideApplyStatus performs a server-side apply PATCH on the given object's status subresource.
+// It sends the request with the configured FieldOwner (and optionally ForceOwnership).
+func (a *APIApplicator) serverSideApplyStatus(ctx context.Context, desired client.Object, requestOpts *RequestOptions) error {
+	if err := a.prepareServerSideApply(desired, requestOpts); err != nil {
+		return err
+	}
+
+	patchOpts := []client.SubResourcePatchOption{client.FieldOwner(requestOpts.FieldManager)}
+	if requestOpts.ForceOwnership {
+		patchOpts = append(patchOpts, client.ForceOwnership)
+	}
+
+	if err := a.client.Status().Patch(ctx, desired, client.Apply, patchOpts...); err != nil {
+		return fmt.Errorf("cannot server-side apply object status: %w", err)
 	}
 	return nil
 }
@@ -247,7 +296,8 @@ func (a *APIApplicator) createNewObject(ctx context.Context, obj client.Object, 
 }
 
 // ApplyStatus updates the object's status subresource. If the object does not exist, an
-// error will be returned.
+// error will be returned. WithOptimisticLock preserves the supplied resource version
+// as a write precondition. Successful writes refresh o's resource version; no-ops do not.
 func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts ...ApplyOption) error {
 	m, ok := o.(metav1.Object)
 	if !ok {
@@ -261,6 +311,15 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 
 	current := o.DeepCopyObject().(client.Object) // copy so original object isn't mutated by patch
 	desired := o.DeepCopyObject().(client.Object)
+
+	// Server-side apply mutates desired and bypasses the Get and diff loop.
+	// The apiserver returns NotFound if the object doesn't exist.
+	if requestOpts.ServerSideApply {
+		if err := applyObjectOptions(ctx, desired, requestOpts, opts); err != nil {
+			return fmt.Errorf("applying object options: %w", err)
+		}
+		return a.serverSideApplyStatus(ctx, desired, requestOpts)
+	}
 
 	err := a.client.Get(ctx, types.NamespacedName{Name: m.GetName(), Namespace: m.GetNamespace()}, current)
 	if kerrors.IsNotFound(err) {
@@ -300,29 +359,32 @@ func (a *APIApplicator) ApplyStatus(ctx context.Context, o client.Object, opts .
 	// copy fields from server data needed for generating a correct patch
 	desired.(metav1.Object).SetUID(current.(metav1.Object).GetUID())
 
-	// ignore optimistic resource lock
-	// TODO should we add option to enforce optimistic lock?
-	desired.SetResourceVersion("")
+	// optimistic lock sends the caller's resource version as-is, so the write fails with a conflict if the object changed
+	// after the caller read it.
+	if err := validateOptimisticLock(requestOpts, desired); err != nil {
+		return fmt.Errorf("applying optimistic lock: %w", err)
+	}
+
+	// without `WithOptimisticLock`, ignore resource version
+	// updates must include a version, so use the server's current version. patches can omit it.
+	if !requestOpts.EnforceOptimisticLock {
+		resourceVersion := ""
+		if requestOpts.Update {
+			resourceVersion = current.GetResourceVersion()
+		}
+		desired.SetResourceVersion(resourceVersion)
+	}
 
 	if requestOpts.Update {
-		// update
-		// automatically set resource version if not supplied by caller
-		if desired.GetResourceVersion() == "" {
-			desired.SetResourceVersion(current.GetResourceVersion())
-		}
-
 		if err = a.client.Status().Update(ctx, desired); err != nil {
 			return fmt.Errorf("cannot update object status: %w", err)
 		}
+		o.SetResourceVersion(desired.GetResourceVersion())
 	} else {
-		// patch
-		if !requestOpts.EnforceOptimisticLock {
-			// ignore optimistic resource lock if `WithOptimisticLock` wasn't specified
-			desired.SetResourceVersion("")
-		}
 		if err = a.client.Status().Patch(ctx, current, &patch{from: desired}); err != nil {
 			return fmt.Errorf("cannot patch object status: %w", err)
 		}
+		o.SetResourceVersion(current.GetResourceVersion())
 	}
 
 	return nil
