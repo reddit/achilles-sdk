@@ -175,9 +175,22 @@ func (b *ClaimBuilder[T, U, ClaimedType, ClaimType]) Build() SetupFunc {
 			Applicator: io.NewAPIPatchingApplicator(mgr.GetClient()),
 		}
 
-		// claim reconciler
+		// Claim binding and deletion depend on authoritative reads, including reads
+		// inside finalizer helpers and the applicator. Keep the FSM client cached.
+		claimClient, err := client.New(mgr.GetConfig(), client.Options{
+			Scheme:     scheme,
+			Mapper:     mgr.GetRESTMapper(),
+			HTTPClient: mgr.GetHTTPClient(),
+		})
+		if err != nil {
+			return fmt.Errorf("creating claim client: %w", err)
+		}
+		claimApplicator := &io.ClientApplicator{
+			Client:     claimClient,
+			Applicator: io.NewAPIPatchingApplicator(claimClient),
+		}
 		claimName := meta.MustGVKForObject(b.claim, scheme).Kind
-		claimReconciler := internal.NewClaimReconciler(b.obj, b.claim, c, scheme, log, b.beforeDelete)
+		claimReconciler := internal.NewClaimReconciler(b.obj, b.claim, claimApplicator, scheme, log, b.beforeDelete)
 		if err := ctrl.NewControllerManagedBy(mgr).
 			Named(claimName).
 			WithOptions(controller.Options{

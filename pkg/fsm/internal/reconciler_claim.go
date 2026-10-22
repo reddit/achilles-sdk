@@ -32,6 +32,7 @@ var (
 )
 
 type ClaimReconciler[T any, Claimed apitypes.ClaimedType[T], U any, Claim apitypes.ClaimType[U]] struct {
+	// Client must use uncached reads for binding and lifecycle decisions.
 	Client *io.ClientApplicator
 	Scheme *runtime.Scheme
 	Log    *zap.SugaredLogger
@@ -68,6 +69,22 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 		return ctrl.Result{RequeueAfter: shard.PendingRequeueInterval}, nil
 	}
 
+	// Finalizer helpers refresh claim in place. Select the claimed resource only after
+	// that refresh, so a newly observed binding cannot leave a stale candidate behind.
+	if !meta.WasDeleted(claim) && !meta.HasSuspendLabel(claim) {
+		if err := meta.AddFinalizer(ctx, r.Client.Client, claim, finalizer); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+		}
+
+		// The refresh may also have changed shard ownership.
+		switch shard.Check(ctx, claim) {
+		case shard.NotManaged:
+			return ctrl.Result{}, nil
+		case shard.Pending:
+			return ctrl.Result{RequeueAfter: shard.PendingRequeueInterval}, nil
+		}
+	}
+
 	claimed := Claimed(new(T))
 	claimedExists := false
 	if ref := claim.GetClaimedRef(); ref != nil {
@@ -79,7 +96,7 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 		}
 		// NotFound means the claim is bound to a claimed object that no longer (or does not yet) exist
 		claimedExists = err == nil
-	} else {
+	} else if !meta.WasDeleted(claim) && !meta.HasSuspendLabel(claim) {
 		// this is a fresh claim, generate a resource name.
 		//
 		// running a DryRun Create will cause the apiserver to generate and populate a Name without
@@ -156,16 +173,13 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 		return ctrl.Result{}, nil
 	}
 
-	// ensure finalizer on claim
-	if err := meta.AddFinalizer(ctx, r.Client.Client, claim, finalizer); err != nil {
-		return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
-	}
-
-	// we must claim the bound resource first to prevent races
+	// Reserve the name before creating the claimed resource. A competing binding
+	// must cause a conflict, not be overwritten or leave our candidate orphaned.
 	if claim.GetClaimedRef() == nil {
+		patch := client.MergeFromWithOptions(claim.DeepCopyObject().(client.Object), client.MergeFromWithOptimisticLock{})
 		claim.SetClaimedRef(claimedRef)
-		if err := r.Client.Applicator.Apply(ctx, claim); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating client with resource ref: %w", err)
+		if err := r.Client.Patch(ctx, claim, patch); err != nil {
+			return ctrl.Result{}, fmt.Errorf("binding claim to resource: %w", err)
 		}
 	}
 

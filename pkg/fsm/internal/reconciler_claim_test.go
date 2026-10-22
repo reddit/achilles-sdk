@@ -9,12 +9,14 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/reddit/achilles-sdk-api/api"
@@ -224,6 +226,100 @@ func TestReconciler_Claim(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClaimReconcileSelectsAfterFinalizerRefresh(t *testing.T) {
+	ctx := t.Context()
+	claim := apply(newTestClaim(), withFinalizer)
+	winner := apply(&v1alpha1.TestClaimed{}, withClaimRef)
+	winner.Name = "winning-claimed"
+	apiClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(claim, winner).WithStatusSubresource(claim, winner).Build()
+	key := client.ObjectKeyFromObject(claim)
+	require.NoError(t, apiClient.Get(ctx, key, claim))
+	unbound := claim.DeepCopy()
+	claim.SetClaimedRef(meta.MustTypedObjectRefFromObject(winner, scheme))
+	require.NoError(t, apiClient.Update(ctx, claim))
+
+	// The first read sees the old unbound snapshot; the finalizer read advances
+	// to the persisted winner. No later read regresses to the old snapshot.
+	initialRead := true
+	dryRuns := 0
+	c := interceptor.NewClient(apiClient, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if out, ok := obj.(*v1alpha1.TestClaim); ok && initialRead {
+				initialRead = false
+				*out = *unbound.DeepCopy()
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			options := &client.CreateOptions{}
+			options.ApplyOptions(opts)
+			if len(options.DryRun) > 0 {
+				dryRuns++
+			}
+			require.NoError(t, generateNameClientFilter("create", obj))
+			return c.Create(ctx, obj, opts...)
+		},
+	})
+	r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, testApplicator(c), scheme, zaptest.NewLogger(t).Sugar(), nil)
+	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+	require.NoError(t, apiClient.Get(ctx, key, claim))
+	require.Equal(t, meta.MustTypedObjectRefFromObject(winner, scheme), claim.GetClaimedRef())
+	claimed := &v1alpha1.TestClaimedList{}
+	require.NoError(t, apiClient.List(ctx, claimed))
+	require.Len(t, claimed.Items, 1, "the refreshed binding must not leave an orphan candidate")
+	require.Equal(t, winner.Name, claimed.Items[0].Name)
+	require.Zero(t, dryRuns, "the refreshed binding must be selected before generating a candidate")
+}
+
+func TestClaimReconcileDoesNotOverwriteCompetingBinding(t *testing.T) {
+	ctx := t.Context()
+	claim := apply(newTestClaim(), withFinalizer)
+	winner := apply(&v1alpha1.TestClaimed{}, withClaimRef)
+	winner.Name = "winning-claimed"
+	apiClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(claim, winner).WithStatusSubresource(claim, winner).Build()
+	key := client.ObjectKeyFromObject(claim)
+	winnerRef := meta.MustTypedObjectRefFromObject(winner, scheme)
+	dryRuns := 0
+	c := interceptor.NewClient(apiClient, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			options := &client.CreateOptions{}
+			options.ApplyOptions(opts)
+			if len(options.DryRun) > 0 {
+				dryRuns++
+				// Another writer wins after candidate selection. Use a real fake
+				// client update so its resource version, not an injected error,
+				// makes the losing binding patch conflict.
+				require.NoError(t, apiClient.Get(ctx, key, claim))
+				claim.SetClaimedRef(winnerRef)
+				require.NoError(t, apiClient.Update(ctx, claim))
+			}
+			require.NoError(t, generateNameClientFilter("create", obj))
+			return c.Create(ctx, obj, opts...)
+		},
+	})
+	r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, testApplicator(c), scheme, zaptest.NewLogger(t).Sugar(), nil)
+	req := reconcile.Request{NamespacedName: key}
+	_, err := r.Reconcile(ctx, req)
+	require.True(t, k8serrors.IsConflict(err), "expected binding conflict, got %v", err)
+	require.NoError(t, apiClient.Get(ctx, key, claim))
+	require.Equal(t, winnerRef, claim.GetClaimedRef())
+	claimed := &v1alpha1.TestClaimedList{}
+	require.NoError(t, apiClient.List(ctx, claimed))
+	require.Len(t, claimed.Items, 1, "the losing candidate must not be created")
+	require.Equal(t, winner.Name, claimed.Items[0].Name)
+
+	// A subsequent reconciliation follows the winner without reserving another name.
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, 1, dryRuns)
+	require.NoError(t, apiClient.List(ctx, claimed))
+	require.Len(t, claimed.Items, 1)
 }
 
 // helpers

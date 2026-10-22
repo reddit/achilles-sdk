@@ -5,6 +5,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -196,6 +197,78 @@ var _ = Describe("Claim Controller", Ordered, func() {
 			}).Should(Succeed())
 		})
 	})
+
+	for _, test := range []struct {
+		name       string
+		staleClaim bool
+	}{
+		{"should retain the claim finalizer on a cached claimed NotFound", false},
+		{"should finish deletion despite an old non-deleting claim snapshot", true},
+	} {
+		It(test.name, func() {
+			claim := &v1alpha1.TestClaim{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "stale-cache-claim-", Namespace: "default"},
+				Spec:       v1alpha1.TestClaimSpec{TestField: "test-field"},
+			}
+			Expect(c.Create(ctx, claim)).To(Succeed())
+			key := client.ObjectKeyFromObject(claim)
+			claimed := &v1alpha1.TestClaimed{}
+			Eventually(func(g Gomega) {
+				g.Expect(c.Get(ctx, key, claim)).To(Succeed())
+				g.Expect(claim.GetClaimedRef()).ToNot(BeNil())
+				g.Expect(c.Get(ctx, claim.GetClaimedRef().ObjectKey(), claimed)).To(Succeed())
+			}).Should(Succeed())
+
+			// Hold deletion open independently of the FSM and envtest's absent GC.
+			Eventually(func(g Gomega) {
+				g.Expect(c.Get(ctx, claim.GetClaimedRef().ObjectKey(), claimed)).To(Succeed())
+				controllerutil.AddFinalizer(claimed, "test.infrared.reddit.com/hold")
+				g.Expect(c.Update(ctx, claimed)).To(Succeed())
+			}).Should(Succeed())
+			claimedKey := client.ObjectKeyFromObject(claimed)
+			if test.staleClaim {
+				cachedClient.staleClaim.Store(claim.DeepCopy())
+			}
+			cachedClient.missingClaimed.Store(&claimedKey)
+			DeferCleanup(func() {
+				cachedClient.staleClaim.Store(nil)
+				cachedClient.missingClaimed.Store(nil)
+			})
+
+			Expect(c.Delete(ctx, claim)).To(Succeed())
+			By("using authoritative claim and claimed reads to start foreground deletion", func() {
+				if test.staleClaim {
+					stale := &v1alpha1.TestClaim{}
+					Expect(cachedClient.Get(ctx, key, stale)).To(Succeed())
+					Expect(stale.DeletionTimestamp.IsZero()).To(BeTrue())
+				}
+				Expect(k8serrors.IsNotFound(cachedClient.Get(ctx, claimedKey, &v1alpha1.TestClaimed{}))).To(BeTrue())
+				Eventually(func(g Gomega) {
+					g.Expect(c.Get(ctx, claimedKey, claimed)).To(Succeed())
+					g.Expect(claimed.DeletionTimestamp.IsZero()).To(BeFalse())
+					g.Expect(claimed.Finalizers).To(ContainElement(metav1.FinalizerDeleteDependents))
+				}).Should(Succeed())
+				Consistently(func(g Gomega) {
+					actualClaim := &v1alpha1.TestClaim{}
+					g.Expect(c.Get(ctx, key, actualClaim)).To(Succeed())
+					g.Expect(actualClaim.Finalizers).To(ContainElement("cloud.infrared.reddit.com/claim"))
+				}, time.Second, 100*time.Millisecond).Should(Succeed())
+			})
+
+			By("finalizing only after the claimed resource is really absent", func() {
+				// Envtest has no garbage collector. Complete the held foreground deletion.
+				Eventually(func(g Gomega) {
+					g.Expect(c.Get(ctx, claimedKey, claimed)).To(Succeed())
+					claimed.Finalizers = nil
+					g.Expect(c.Update(ctx, claimed)).To(Succeed())
+				}).Should(Succeed())
+				Expect(k8serrors.IsNotFound(c.Get(ctx, claimedKey, claimed))).To(BeTrue())
+				Eventually(func() bool {
+					return k8serrors.IsNotFound(c.Get(ctx, key, &v1alpha1.TestClaim{}))
+				}).Should(BeTrue())
+			})
+		})
+	}
 
 	It("should execute beforeCreate hook when claim deleted", func() {
 		testClaim := &v1alpha1.TestClaim{
