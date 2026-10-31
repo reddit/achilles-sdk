@@ -260,6 +260,7 @@ func DeleteChildrenForeground[T ResourceManagerObject](
 	scheme *runtime.Scheme,
 	log *zap.SugaredLogger,
 	next *State[T],
+	statusOpts ...io.ApplyOption,
 ) TransitionFunc[T] {
 	return func(
 		ctx context.Context,
@@ -298,7 +299,7 @@ func DeleteChildrenForeground[T ResourceManagerObject](
 
 		// update resource refs
 		parent.SetManagedResources(extantChildRefs)
-		if err := c.ApplyStatus(ctx, parent); err != nil {
+		if err := c.ApplyStatus(ctx, parent, statusOpts...); err != nil {
 			return nil, ErrorResultf("updating parent status' managed resource refs: %w", err)
 		}
 
