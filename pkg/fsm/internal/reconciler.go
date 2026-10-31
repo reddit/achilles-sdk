@@ -160,9 +160,13 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 
 		// NOTE: status must be updated upon termination of FSM, otherwise steady state won't be reached because
 		// later states that overwrite status conditions of earlier states will trigger reconcile events
-		if err := r.client.ApplyStatus(ctx, obj); err != nil {
+		if err := r.client.ApplyStatus(ctx, obj, r.statusApplyOptions()...); err != nil {
 			if k8serrors.IsNotFound(err) {
 				return ctrl.Result{}, nil
+			}
+			// The status was computed from an outdated copy: recompute it from a fresh read.
+			if k8serrors.IsConflict(err) {
+				return types.RequeueResultWithBackoff(fmt.Sprintf("conflict when updating status: %v", err)).Get(log)
 			}
 			return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 		}
@@ -203,6 +207,13 @@ func (r *fsmReconciler[T, Obj]) ownership(ctx context.Context, req ctrl.Request)
 		return shard.Owned, fmt.Errorf("getting %T to resolve its shard: %w", obj, err)
 	}
 	return shard.Check(ctx, obj), nil
+}
+
+func (r *fsmReconciler[T, Obj]) statusApplyOptions() []io.ApplyOption {
+	if r.reconcilerOptions.OptimisticLockStatus {
+		return []io.ApplyOption{io.WithOptimisticLock()}
+	}
+	return nil
 }
 
 // reconcile the object through a sequence of FSM states
@@ -394,7 +405,7 @@ func (r *fsmReconciler[T, Obj]) applyOutputs(
 		meta.SetRedditLabels(res, r.name)
 		shard.Propagate(obj, res)
 	}
-	return fsmio.ApplyOutputSet(ctx, r.log, r.client, r.scheme, obj, outputSet)
+	return fsmio.ApplyOutputSet(ctx, r.log, r.client, r.scheme, obj, outputSet, r.statusApplyOptions()...)
 }
 
 func DeletedStateFor[T any, Obj apitypes.FSMResource[T]](_ *fsmReconciler[T, Obj]) *types.State[Obj] {

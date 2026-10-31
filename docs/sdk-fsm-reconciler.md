@@ -78,7 +78,7 @@ Broadly speaking, there are three types of results:
    terminal state, simply complete
 2. **requeue**—instructs the reconciler to trigger again after a user-specified amount of time. This is used in cases
    where
-   a controller is waiting for an external condition to be fulfilled. The SDK will also requeue when applying outputs returns a retryable Conflict error.
+   a controller is waiting for an external condition to be fulfilled. The SDK will also requeue when applying outputs or writing status returns a retryable Conflict error.
 3. **error**—the reconciler logs an error message and will retrigger, the delay of which is subject to exponential
    backoff
 
@@ -99,6 +99,35 @@ for ensuring outputs. It provides the following functionality:
 - output objects have their owner references updated with the parent object
     - this provides free garbage collection (i.e. the child objects will be deleted if the parent object is deleted) via
       native Kubernetes garbage collection
+
+## Status Writes
+
+The FSM writes the object's status when the reconcile ends, computed from the copy it read at the start, usually
+from the informer cache. That copy [can be outdated](sdk-apply-objects.md#advanced-apply-patterns): the reconcile may
+start before the cache sees an earlier status write. By default the write doesn't check, so it can replace newer
+status with values computed from the outdated copy.
+
+This can make status loop. A condition stamped with different `lastTransitionTime`s by two reconciles flips between
+them on every following reconcile, each write triggering the next.
+
+To write status only if the object hasn't changed since the reconcile read it, set `OptimisticLockStatus`:
+
+```go
+fsm.NewBuilder(...).
+	WithReconcilerOptions(fsmtypes.ReconcilerOptions[v1alpha1.Foobar, *v1alpha1.Foobar]{
+		OptimisticLockStatus: true,
+	})
+```
+
+Any change to the object after the read, including to its spec or metadata, rejects the status write and requeues
+the object with backoff, so the next reconcile computes status from a fresh read.
+
+A state that writes the object itself must lock that write with `io.WithOptimisticLock()` or an equivalent
+precondition, then copy the written `resourceVersion` back onto the object it was given:
+- Unlocked, the write can carry outdated values, and leaves the object with a version that hides that.
+- Without copying the version back, the FSM's status write conflicts with that write on every such reconcile.
+
+For `DeleteChildrenForeground`, pass `io.WithOptimisticLock()` as its status option.
 
 ## Finalizer States
 
