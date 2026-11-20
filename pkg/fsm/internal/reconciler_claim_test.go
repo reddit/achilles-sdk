@@ -308,6 +308,56 @@ func TestClaimReconcilerStartsForegroundDeletionOnce(t *testing.T) {
 	}
 }
 
+func TestClaimReconcilerWaitsForBackgroundDeletion(t *testing.T) {
+	ctx := context.Background()
+	claim := apply(newTestClaim(), withFinalizer, withGeneratedClaimRef)
+	claimed := apply(&v1alpha1.TestClaimed{}, withGeneratedName, withClaimRef)
+	claimed.SetFinalizers([]string{finalizerKey})
+	claimKey := client.ObjectKeyFromObject(claim)
+	claimedKey := client.ObjectKeyFromObject(claimed)
+	apiClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(claim, claimed).Build()
+	if err := apiClient.Delete(ctx, claimed, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+		t.Fatalf("start background deletion of claimed object: %v", err)
+	}
+	if err := apiClient.Get(ctx, claimedKey, claimed); err != nil {
+		t.Fatalf("get claimed object held by its finalizer: %v", err)
+	}
+	if claimed.DeletionTimestamp.IsZero() {
+		t.Fatal("claimed object did not enter deletion")
+	}
+	if err := apiClient.Delete(ctx, claim); err != nil {
+		t.Fatalf("start claim deletion: %v", err)
+	}
+
+	// The fake client does not implement garbage collection. Catch any attempt
+	// by the reconciler to change the deletion policy by sending another DELETE.
+	reconcilerClient := interceptor.NewClient(apiClient, interceptor.Funcs{
+		Delete: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+			t.Errorf("unexpected DELETE of %s after background deletion started", client.ObjectKeyFromObject(obj))
+			return nil
+		},
+	})
+	r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, testApplicator(reconcilerClient), apiClient, scheme, zaptest.NewLogger(t).Sugar(), nil)
+	req := reconcile.Request{NamespacedName: claimKey}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile while claimed object is terminating: %v", err)
+	}
+	if err := apiClient.Get(ctx, claimKey, claim); err != nil || len(claim.Finalizers) != 1 || claim.Finalizers[0] != finalizer {
+		t.Fatalf("claim must retain its finalizer while claimed object exists, got %v, error %v", claim.Finalizers, err)
+	}
+
+	claimed.SetFinalizers(nil)
+	if err := apiClient.Update(ctx, claimed); err != nil {
+		t.Fatalf("complete claimed object deletion: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile after claimed object disappears: %v", err)
+	}
+	if err := apiClient.Get(ctx, claimKey, claim); !k8serrors.IsNotFound(err) {
+		t.Fatalf("claim should be gone after claimed object is deleted, got %v", err)
+	}
+}
+
 // helpers
 func newTestClaim() *v1alpha1.TestClaim {
 	return &v1alpha1.TestClaim{
