@@ -85,6 +85,19 @@ func TestRemoveFinalizer(t *testing.T) {
 		}
 	})
 
+	t.Run("replacement keeps its finalizer", func(t *testing.T) {
+		original := newCM(testFinalizer)
+		original.SetUID("original")
+		replacement := newCM(testFinalizer)
+		replacement.SetUID("replacement")
+		c := newClient(interceptor.Funcs{}, replacement)
+
+		if err := meta.RemoveFinalizer(ctx, c, original, testFinalizer); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		assertFinalizers(t, getCM(t, c), testFinalizer)
+	})
+
 	t.Run("object deleted between get and patch is success", func(t *testing.T) {
 		c := newClient(interceptor.Funcs{
 			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {

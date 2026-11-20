@@ -37,9 +37,10 @@ const (
 var errStateLoop = errors.New("re-entered state")
 
 type fsmReconciler[T any, Obj apitypes.FSMResource[T]] struct {
-	log    *zap.SugaredLogger
-	client *io.ClientApplicator
-	scheme *runtime.Scheme
+	log       *zap.SugaredLogger
+	client    *io.ClientApplicator
+	apiClient apiReadClient
+	scheme    *runtime.Scheme
 
 	name           string
 	initialState   *types.State[Obj]
@@ -55,6 +56,7 @@ func NewFSMReconciler[T any, Obj apitypes.FSMResource[T]](
 	name string,
 	log *zap.SugaredLogger,
 	client *io.ClientApplicator,
+	apiReader client.Reader,
 	scheme *runtime.Scheme,
 	initialState *types.State[Obj],
 	finalizerState *types.State[Obj],
@@ -74,6 +76,7 @@ func NewFSMReconciler[T any, Obj apitypes.FSMResource[T]](
 	return &fsmReconciler[T, Obj]{
 		log:               log,
 		client:            client,
+		apiClient:         apiReadClient{Client: client.Client, reader: apiReader},
 		scheme:            scheme,
 		name:              name,
 		initialState:      initialState,
@@ -178,7 +181,7 @@ func (r *fsmReconciler[T, Obj]) Reconcile(ctx context.Context, req ctrl.Request)
 	// having been processed (if, for instance, an external actor deletes the object after `r.reconcile(ctx, req)`
 	// and before this condition.
 	if meta.WasDeleted(obj) && r.finalizerState != nil && result.IsDone() {
-		if err := meta.RemoveFinalizer(ctx, r.client.Client, obj, finalizerKey); err != nil {
+		if err := meta.RemoveFinalizer(ctx, r.apiClient, obj, finalizerKey); err != nil {
 			return ctrl.Result{}, fmt.Errorf("removing FSM finalizer: %w", err)
 		}
 	}

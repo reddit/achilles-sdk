@@ -24,7 +24,8 @@ import (
 )
 
 const (
-	finalizer = "cloud.infrared.reddit.com/claim"
+	finalizer                   = "cloud.infrared.reddit.com/claim"
+	claimedDeletionRequeueAfter = 30 * time.Second
 )
 
 var (
@@ -37,6 +38,8 @@ type ClaimReconciler[T any, Claimed apitypes.ClaimedType[T], U any, Claim apityp
 	Log    *zap.SugaredLogger
 
 	Name string
+
+	apiClient apiReadClient
 	// Hook to run before deleting claimed resource.
 	beforeDelete BeforeDelete[T, Claimed, U, Claim]
 }
@@ -73,7 +76,11 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 	if ref := claim.GetClaimedRef(); ref != nil {
 		// claim already bound, populate resource fields for future use
 		claimed.SetName(ref.Name)
-		err := r.Client.Get(ctx, ref.ObjectKey(), claimed)
+		var reader client.Reader = r.Client
+		if meta.WasDeleted(claim) {
+			reader = r.apiClient
+		}
+		err := reader.Get(ctx, ref.ObjectKey(), claimed)
 		if err != nil && !k8serrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("fetching %T %q: %w", claimed, ref.Name, err)
 		}
@@ -141,18 +148,24 @@ func (r *ClaimReconciler[T, Claimed, U, Claim]) Reconcile(ctx context.Context, r
 		}
 
 		if claimedExists {
-			if err := r.Client.Delete(ctx, claimed, client.PropagationPolicy(metav1.DeletePropagationForeground)); k8serrors.IsNotFound(err) {
-				return ctrl.Result{}, nil
-			} else if err != nil {
-				return ctrl.Result{}, fmt.Errorf("deleting claimed: %w", err)
+			// Repeating a foreground DELETE can restore foregroundDeletion after
+			// garbage collection has cleared it.
+			if !meta.WasDeleted(claimed) {
+				uid, version := claimed.GetUID(), claimed.GetResourceVersion()
+				if err := client.IgnoreNotFound(r.Client.Delete(ctx, claimed,
+					client.PropagationPolicy(metav1.DeletePropagationForeground),
+					client.Preconditions{UID: &uid, ResourceVersion: &version},
+				)); err != nil {
+					return ctrl.Result{}, fmt.Errorf("deleting claimed: %w", err)
+				}
 			}
-		} else {
-			// remove finalizer, we're ready to delete the claim
-			if err := meta.RemoveFinalizer(ctx, r.Client.Client, claim, finalizer); err != nil {
-				return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
-			}
+			// Recheck in case the informer never observed the claimed object.
+			return ctrl.Result{RequeueAfter: claimedDeletionRequeueAfter}, nil
 		}
 
+		if err := meta.RemoveFinalizer(ctx, r.apiClient, claim, finalizer); err != nil {
+			return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -204,6 +217,7 @@ func NewClaimReconciler[T any, Claimed apitypes.ClaimedType[T], U any, Claim api
 	_ Claimed,
 	claim Claim,
 	client *io.ClientApplicator,
+	apiReader client.Reader,
 	scheme *runtime.Scheme,
 	log *zap.SugaredLogger,
 	beforeDelete BeforeDelete[T, Claimed, U, Claim],
@@ -213,6 +227,7 @@ func NewClaimReconciler[T any, Claimed apitypes.ClaimedType[T], U any, Claim api
 	return ClaimReconciler[T, Claimed, U, Claim]{
 		Name:         gvk.Kind,
 		Client:       client,
+		apiClient:    apiReadClient{Client: client.Client, reader: apiReader},
 		Scheme:       scheme,
 		Log:          log.Named(gvk.Kind),
 		beforeDelete: beforeDelete,
