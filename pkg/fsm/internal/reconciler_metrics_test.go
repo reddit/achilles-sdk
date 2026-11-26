@@ -71,7 +71,7 @@ func TestReconcilerReadinessMetricUsesPersistedStatus(t *testing.T) {
 					return nil, types.DoneResult()
 				},
 			}
-			r := NewFSMReconciler[testv1alpha1.TestClaim, *testv1alpha1.TestClaim]("test", zaptest.NewLogger(t).Sugar(), c, scheme, state, nil, nil, m, types.ReconcilerOptions[testv1alpha1.TestClaim, *testv1alpha1.TestClaim]{})
+			r := NewFSMReconciler[testv1alpha1.TestClaim, *testv1alpha1.TestClaim]("test", zaptest.NewLogger(t).Sugar(), c, apiClient, scheme, state, nil, nil, m, types.ReconcilerOptions[testv1alpha1.TestClaim, *testv1alpha1.TestClaim]{})
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(initial)})
 			if tc.statusWriteOK && err != nil {
 				t.Fatalf("Reconcile() returned error: %v", err)

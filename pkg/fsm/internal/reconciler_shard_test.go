@@ -93,7 +93,7 @@ func shardedReconcilerWithLogs(t *testing.T, obj *testv1alpha1.TestClaim) (
 	log := zap.New(zapcore.NewTee(zaptest.NewLogger(t).Core(), core)).Sugar()
 
 	r := NewFSMReconciler[testv1alpha1.TestClaim, *testv1alpha1.TestClaim](
-		"test", log, c, scheme, state, nil, nil, m,
+		"test", log, c, apiClient, scheme, state, nil, nil, m,
 		types.ReconcilerOptions[testv1alpha1.TestClaim, *testv1alpha1.TestClaim]{},
 	)
 	return r, apiClient, logs

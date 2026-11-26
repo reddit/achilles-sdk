@@ -227,6 +227,16 @@ func (b *Builder[T, Obj]) Reconciler(
 	c client.Client,
 	metrics *metrics.Metrics,
 ) reconcile.TypedReconciler[ctrl.Request] {
+	return b.reconciler(log, scheme, c, c, metrics)
+}
+
+func (b *Builder[T, Obj]) reconciler(
+	log *zap.SugaredLogger,
+	scheme *runtime.Scheme,
+	c client.Client,
+	apiReader client.Reader,
+	metrics *metrics.Metrics,
+) reconcile.TypedReconciler[ctrl.Request] {
 	objGVK := meta.MustTypedObjectRefFromObject(b.obj, scheme)
 	name := strcase.ToKebab(objGVK.Kind)
 	log = log.Named(name)
@@ -245,6 +255,7 @@ func (b *Builder[T, Obj]) Reconciler(
 		name,
 		log,
 		clientApplicator,
+		apiReader,
 		scheme,
 		b.initialState,
 		b.finalizerState,
@@ -276,7 +287,7 @@ func (b *Builder[T, Obj]) Build() SetupFunc {
 			managedGVKs[i] = managedType.gvk
 		}
 
-		r := b.Reconciler(log, scheme, c.Client, metrics)
+		r := b.reconciler(log, scheme, c.Client, mgr.GetAPIReader(), metrics)
 
 		builder := ctrl.NewControllerManagedBy(mgr).
 			WithOptions(controller.Options{

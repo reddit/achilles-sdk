@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/reddit/achilles-sdk-api/api"
@@ -181,7 +182,7 @@ func TestReconciler_Claim(t *testing.T) {
 
 			c := testApplicator(fakeClient)
 
-			r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, c, scheme, log, nil)
+			r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, c, fakeClient, scheme, log, nil)
 
 			ctx := context.Background()
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: testClaimName}}
@@ -223,6 +224,137 @@ func TestReconciler_Claim(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestClaimReconcilerStartsForegroundDeletionOnce(t *testing.T) {
+	ctx := context.Background()
+	claim := apply(newTestClaim(), withFinalizer, withGeneratedClaimRef, withDeletedTimestamp[*v1alpha1.TestClaim])
+	claimed := apply(&v1alpha1.TestClaimed{}, withGeneratedName, withClaimRef)
+	claimed.SetUID("claimed-uid")
+	claimed.SetFinalizers([]string{finalizerKey})
+	claimKey := client.ObjectKeyFromObject(claim)
+	claimedKey := client.ObjectKeyFromObject(claimed)
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(claim, claimed).Build()
+	if err := apiReader.Get(ctx, claimedKey, claimed); err != nil {
+		t.Fatalf("get live claimed object: %v", err)
+	}
+
+	// The cache keeps returning the initial object, even while it is terminating or gone.
+	staleClaimed := claimed.DeepCopy()
+	staleClaimed.SetResourceVersion("1")
+	var deletes []*client.DeleteOptions
+	cachedClient := interceptor.NewClient(apiReader, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if obj, ok := obj.(*v1alpha1.TestClaimed); ok && key == claimedKey {
+				staleClaimed.DeepCopyInto(obj)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			options := &client.DeleteOptions{}
+			options.ApplyOptions(opts)
+			deletes = append(deletes, options)
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+	r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, testApplicator(cachedClient), apiReader, scheme, zaptest.NewLogger(t).Sugar(), nil)
+	reconcileClaim := func() {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: claimKey}); err != nil {
+			t.Fatalf("reconcile deleting claim: %v", err)
+		}
+	}
+
+	reconcileClaim()
+	if len(deletes) != 1 {
+		t.Fatalf("delete calls after first reconcile = %d, want 1", len(deletes))
+	}
+	if policy := deletes[0].PropagationPolicy; policy == nil || *policy != metav1.DeletePropagationForeground {
+		t.Fatalf("delete propagation policy = %v, want foreground", policy)
+	}
+	preconditions := deletes[0].Preconditions
+	if preconditions == nil || preconditions.UID == nil || *preconditions.UID != claimed.GetUID() ||
+		preconditions.ResourceVersion == nil || *preconditions.ResourceVersion != claimed.GetResourceVersion() {
+		t.Fatalf("delete preconditions = %+v, want live UID %q and resourceVersion %q", preconditions, claimed.GetUID(), claimed.GetResourceVersion())
+	}
+
+	terminating := &v1alpha1.TestClaimed{}
+	if err := apiReader.Get(ctx, claimedKey, terminating); err != nil {
+		t.Fatalf("get terminating claimed object: %v", err)
+	}
+	if terminating.DeletionTimestamp.IsZero() {
+		t.Fatal("claimed object did not enter deletion")
+	}
+	reconcileClaim()
+	if len(deletes) != 1 {
+		t.Fatalf("delete calls while claimed object is terminating = %d, want 1", len(deletes))
+	}
+	if err := apiReader.Get(ctx, claimKey, claim); err != nil || len(claim.Finalizers) != 1 || claim.Finalizers[0] != finalizer {
+		t.Fatalf("claim must retain its finalizer while claimed object exists, got %v, error %v", claim.Finalizers, err)
+	}
+
+	terminating.SetFinalizers(nil)
+	if err := apiReader.Update(ctx, terminating); err != nil {
+		t.Fatalf("complete claimed object deletion: %v", err)
+	}
+	reconcileClaim()
+	if err := apiReader.Get(ctx, claimKey, claim); !k8serrors.IsNotFound(err) {
+		t.Fatalf("claim should be gone after claimed object is deleted, got %v", err)
+	}
+	if len(deletes) != 1 {
+		t.Fatalf("total delete calls = %d, want 1", len(deletes))
+	}
+}
+
+func TestClaimReconcilerWaitsForBackgroundDeletion(t *testing.T) {
+	ctx := context.Background()
+	claim := apply(newTestClaim(), withFinalizer, withGeneratedClaimRef)
+	claimed := apply(&v1alpha1.TestClaimed{}, withGeneratedName, withClaimRef)
+	claimed.SetFinalizers([]string{finalizerKey})
+	claimKey := client.ObjectKeyFromObject(claim)
+	claimedKey := client.ObjectKeyFromObject(claimed)
+	apiClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(claim, claimed).Build()
+	if err := apiClient.Delete(ctx, claimed, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+		t.Fatalf("start background deletion of claimed object: %v", err)
+	}
+	if err := apiClient.Get(ctx, claimedKey, claimed); err != nil {
+		t.Fatalf("get claimed object held by its finalizer: %v", err)
+	}
+	if claimed.DeletionTimestamp.IsZero() {
+		t.Fatal("claimed object did not enter deletion")
+	}
+	if err := apiClient.Delete(ctx, claim); err != nil {
+		t.Fatalf("start claim deletion: %v", err)
+	}
+
+	// The fake client does not implement garbage collection. Catch any attempt
+	// by the reconciler to change the deletion policy by sending another DELETE.
+	reconcilerClient := interceptor.NewClient(apiClient, interceptor.Funcs{
+		Delete: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+			t.Errorf("unexpected DELETE of %s after background deletion started", client.ObjectKeyFromObject(obj))
+			return nil
+		},
+	})
+	r := NewClaimReconciler(&v1alpha1.TestClaimed{}, &v1alpha1.TestClaim{}, testApplicator(reconcilerClient), apiClient, scheme, zaptest.NewLogger(t).Sugar(), nil)
+	req := reconcile.Request{NamespacedName: claimKey}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile while claimed object is terminating: %v", err)
+	}
+	if err := apiClient.Get(ctx, claimKey, claim); err != nil || len(claim.Finalizers) != 1 || claim.Finalizers[0] != finalizer {
+		t.Fatalf("claim must retain its finalizer while claimed object exists, got %v, error %v", claim.Finalizers, err)
+	}
+
+	claimed.SetFinalizers(nil)
+	if err := apiClient.Update(ctx, claimed); err != nil {
+		t.Fatalf("complete claimed object deletion: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile after claimed object disappears: %v", err)
+	}
+	if err := apiClient.Get(ctx, claimKey, claim); !k8serrors.IsNotFound(err) {
+		t.Fatalf("claim should be gone after claimed object is deleted, got %v", err)
 	}
 }
 

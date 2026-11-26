@@ -24,14 +24,18 @@ func AddFinalizer(
 
 // RemoveFinalizer patches an object by removing the given finalizer key.
 // Conflicts with concurrent writers are retried with a bounded backoff.
-// A NotFound error is treated as success: the object is gone, so the finalizer no longer blocks anything.
+// A missing or replaced object is treated as success: the original finalizer no longer blocks deletion.
 func RemoveFinalizer(
 	ctx context.Context,
 	c client.Client,
 	obj client.Object,
 	finalizerKey string,
 ) error {
+	uid := obj.GetUID()
 	err := patchFinalizers(ctx, c, obj, "removal", func(o client.Object) bool {
+		if uid != "" && o.GetUID() != uid {
+			return false
+		}
 		return controllerutil.RemoveFinalizer(o, finalizerKey)
 	})
 	return client.IgnoreNotFound(err)
