@@ -28,5 +28,18 @@ It's desirable for the `claim` object to be namespace scoped for one of the foll
 
 The `achilles-sdk` creates two independent reconcilers for the `claim` and `claimed` objects.
 The `claim` reconciler is entirely managed by the sdk and does not require any work on the user's part ([ref](https://github.com/reddit/achilles-sdk/blob/4fe0f620d71a1a988cd05629df5ea4502b5ff2ea/pkg/fsm/internal/reconciler_claim.go#L45)).
-The `claim` reconciler is responsible for creating the `claimed` object if it does not exist and cascading a delete call when the `claim` object is deleted.
+The `claim` reconciler creates the `claimed` object if it does not exist.
 The developer is responsible for implementing the `claimed` reconciler using the exposed [FSM semantics]({{< ref "dev/sdk/sdk-fsm-reconciler" >}}).
+
+## Deleting a claim
+
+When a bound claim is being deleted, the claim reconciler reads the claimed
+resource directly from the Kubernetes API server. It requests foreground
+deletion only if the claimed resource exists and `metadata.deletionTimestamp`
+is unset. The claim keeps its finalizer until the API server reports that the
+claimed resource is gone.
+
+If background cascading deletion of the claimed resource is already underway,
+the reconciler lets it continue. The claim can finish deleting while Kubernetes
+is still cleaning up the claimed resource's dependents.
+See [Kubernetes background cascading deletion](https://kubernetes.io/docs/concepts/architecture/garbage-collection/#background-cascading-deletion).
