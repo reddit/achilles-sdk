@@ -18,7 +18,8 @@ import (
 
 // ApplyOutputSet ensures that all objects declared in the OutputSet are applied,
 // ensuring extant outputs and deleting outputs that are no longer needed.
-// Metadata tracking extant outputs are persisted onto the specified object's status.
+// Metadata tracking extant outputs are persisted onto the specified object's status using statusOpts. With an
+// optimistic lock, that write succeeds only if obj's resourceVersion is current; a successful write updates it.
 func ApplyOutputSet[T any, Obj apitypes.FSMResource[T]](
 	ctx context.Context,
 	log *zap.SugaredLogger,
@@ -26,6 +27,7 @@ func ApplyOutputSet[T any, Obj apitypes.FSMResource[T]](
 	scheme *runtime.Scheme,
 	obj Obj,
 	out *types.OutputSet,
+	statusOpts ...io.ApplyOption,
 ) error {
 	// delete resources
 	for _, o := range out.ListDeleted() {
@@ -42,7 +44,7 @@ func ApplyOutputSet[T any, Obj apitypes.FSMResource[T]](
 	// apply managed resource refs to status
 	// NOTE: do this after ensuring the manage resource objects to prevent adding a managed resource ref for an
 	// object that wasn't created successfully
-	if err := applyManagedResourceRefs(ctx, log, c, scheme, obj, out); err != nil {
+	if err := applyManagedResourceRefs(ctx, log, c, scheme, obj, out, statusOpts...); err != nil {
 		return fmt.Errorf("applying managed resource refs: %w", err)
 	}
 
@@ -56,6 +58,7 @@ func applyManagedResourceRefs[T any, Obj apitypes.FSMResource[T]](
 	scheme *runtime.Scheme,
 	obj Obj,
 	outputSet *types.OutputSet,
+	statusOpts ...io.ApplyOption,
 ) error {
 	// initialize an empty object so we only update the status' resource refs
 	copy := Obj(new(T))
@@ -104,13 +107,17 @@ func applyManagedResourceRefs[T any, Obj apitypes.FSMResource[T]](
 		refs = append(refs, *meta.MustTypedObjectRefFromObject(newRef, scheme))
 	}
 	copy.SetManagedResources(refs)
+	// With an optimistic lock, the write fails if obj is outdated, instead of letting the caller's next status
+	// write lock onto a version obj hasn't seen.
+	copy.SetResourceVersion(obj.GetResourceVersion())
 
-	if err := c.ApplyStatus(ctx, copy); err != nil {
+	if err := c.ApplyStatus(ctx, copy, statusOpts...); err != nil {
 		return fmt.Errorf("applying status resourceRefs: %w", err)
 	}
 
 	// update in-memory obj
 	obj.SetManagedResources(refs)
+	obj.SetResourceVersion(copy.GetResourceVersion())
 	return nil
 }
 

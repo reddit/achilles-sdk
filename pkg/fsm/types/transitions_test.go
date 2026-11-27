@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -355,6 +357,31 @@ test.infrared.reddit.com/v1alpha1, Kind=TestClaimed: /child-b`,
 			assert.Equal(t, tt.expectedResult, actualResult)
 		})
 	}
+}
+
+// A parent read from a lagging cache would write its outdated status over newer status. With a locked write, the
+// write is rejected instead.
+func Test_DeleteChildrenForegroundWithOptimisticLockKeepsNewerStatus(t *testing.T) {
+	scheme, err := intscheme.NewScheme()
+	require.NoError(t, err)
+	parent := &testv1alpha1.TestClaimed{ObjectMeta: metav1.ObjectMeta{Name: "parent"}}
+	fakeC := fake.NewClientBuilder().WithScheme(scheme).WithObjects(parent).WithStatusSubresource(parent).Build()
+	ctx := context.Background()
+	stale := &testv1alpha1.TestClaimed{}
+	require.NoError(t, fakeC.Get(ctx, client.ObjectKeyFromObject(parent), stale))
+	newer := stale.DeepCopy()
+	newer.SetConditions(api.Condition{Type: "Newer", Status: corev1.ConditionTrue})
+	require.NoError(t, fakeC.Status().Update(ctx, newer))
+	c := &io.ClientApplicator{Client: fakeC, Applicator: io.NewAPIPatchingApplicator(fakeC)}
+
+	_, result := DeleteChildrenForeground[*testv1alpha1.TestClaimed](
+		c, scheme, zaptest.NewLogger(t).Sugar(), successState, io.WithOptimisticLock(),
+	)(ctx, stale, nil)
+
+	assert.True(t, k8serrors.IsConflict(result.Err), "conflict, got %v", result.Err)
+	stored := &testv1alpha1.TestClaimed{}
+	require.NoError(t, fakeC.Get(ctx, client.ObjectKeyFromObject(parent), stored))
+	assert.Equal(t, corev1.ConditionTrue, stored.GetCondition("Newer").Status)
 }
 
 func Test_ErrorResultf(t *testing.T) {

@@ -21,6 +21,14 @@ type ReconcilerOptions[T any, Obj types.FSMResource[T]] struct {
 	// provided by default.
 	DisableReadyCondition bool
 
+	// OptimisticLockStatus, if true, writes status only if the object is unchanged since the reconcile read it.
+	// Otherwise a reconcile that read an outdated copy, as from a lagging cache, writes that copy's status back over
+	// newer status. A rejected write requeues the object with backoff.
+	//
+	// A state that writes the object must lock that write too, and copy the written resourceVersion back onto the
+	// object it was given. See docs/sdk-fsm-reconciler.md.
+	OptimisticLockStatus bool
+
 	// MetricsOptions are options for tuning the metrics instrumentation of this reconciler.
 	MetricsOptions MetricsOptions
 }
